@@ -48,8 +48,9 @@ def _load_sklearn() -> None:
         linear_model = importlib.import_module("sklearn.linear_model")
     except ImportError as exc:  # pragma: no cover - optional dependency path
         raise ImportError(
-            "SVEM elastic-net fitting requires scikit-learn; install the "
-            "'svem' optional dependency to use SVEMElasticNetEngine"
+            "SVEM elastic-net fitting requires scikit-learn "
+            "(a declared dependency of svemnet); reinstall with "
+            "'pip install svemnet' or 'pip install scikit-learn'"
         ) from exc
     sklearn = package
     ConvergenceWarning = exceptions.ConvergenceWarning

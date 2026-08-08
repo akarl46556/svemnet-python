@@ -66,9 +66,9 @@ Issues = "https://github.com/USER/svemnet-python/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/svemnet"]
 
+[tool.hatch.build.targets.sdist]
+# Internal agent/maintainer files stay out of the published sdist
+exclude = ["AGENTS.md", "CLAUDE.md", "validation/output"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-filterwarnings = [
-  # sklearn's parametrize_with_checks passes a generator; harmless upstream issue
-  "ignore::pytest.PytestRemovedIn10Warning",
-]

@@ -148,6 +148,41 @@ class TestForwardSelect:
         assert result.selected_terms == ()
         np.testing.assert_allclose(result.coefficients[0], 5.0)
 
+    def test_large_mean_response_is_not_truncated(self):
+        # Regression: a dust guard anchored to raw response energy silently
+        # stopped selection when the intercept absorbs a huge mean.
+        rng = np.random.default_rng(0)
+        n = 40
+        x1, x2 = rng.normal(size=(2, n))
+        y = 1e8 + 2 * x1 + rng.normal(0, 0.1, n)
+        result = forward_select(np.column_stack([x1, x2]), y,
+                                feature_names=("x1", "x2"))
+        assert "x1" in result.selected_terms
+        assert abs(result.coefficients[1] - 2.0) < 0.1
+
+        # Mid-path variant: the small second term must still enter
+        y2 = 1e5 + 2 * x1 + 0.03 * x2 + rng.normal(0, 1e-4, n)
+        result2 = forward_select(np.column_stack([x1, x2]), y2,
+                                 feature_names=("x1", "x2"))
+        assert set(result2.selected_terms) == {"x1", "x2"}
+        assert abs(result2.coefficients[2] - 0.03) < 1e-3
+
+    def test_noise_floor_stop_is_recorded(self):
+        rng = np.random.default_rng(1)
+        n = 20
+        cB = rng.normal(size=n)
+        y = cB + 4e-9 * rng.normal(size=n)
+        c2 = y + 1e-9 * rng.normal(size=n)
+        result = forward_select(np.column_stack([cB, c2]), y,
+                                feature_names=("cB", "c2"))
+        assert any("noise floor" in w for w in result.warnings)
+
+    def test_empty_design_returns_intercept_only(self):
+        y = np.arange(20, dtype=float)
+        result = forward_select(np.empty((20, 0)), y)
+        assert result.selected_terms == ()
+        np.testing.assert_allclose(result.coefficients, [y.mean()])
+
     def test_input_validation(self):
         X, y, names = _toy()
         with pytest.raises(ValueError):
@@ -158,3 +193,11 @@ class TestForwardSelect:
             forward_select(X, y, groups={"a": [0], "b": [0]})  # overlap
         with pytest.raises(ValueError):
             forward_select(X, y, groups={"a": [99]})  # out of range
+        with pytest.raises(ValueError, match="duplicate"):
+            forward_select(X, y, feature_names=("a", "a", "b", "c", "d", "e"))
+        with pytest.raises(ValueError, match="duplicate"):
+            forward_select(X, y, groups={1: [0], "1": [1]})
+        with pytest.raises(ValueError, match="not an integer"):
+            forward_select(X, y, groups={"a": [0.5]})
+        with pytest.raises(ValueError, match="boolean"):
+            forward_select(X, y, groups={"a": [True, False]})

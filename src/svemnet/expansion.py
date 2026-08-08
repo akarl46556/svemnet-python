@@ -9,7 +9,22 @@ require the ``svemnet[formula]`` extra) or any formulaic workflow.
 
 from __future__ import annotations
 
+import keyword
 from typing import Sequence
+
+
+def _quote(name: str) -> str:
+    """Backtick-quote factor names that are not plain Python identifiers.
+
+    Formulaic requires backticks for names with spaces, hyphens, or other
+    operator characters; without quoting, ``a-b`` would silently parse as
+    the term ``a`` minus the term ``b``.
+    """
+    if name.isidentifier() and not keyword.iskeyword(name):
+        return name
+    if "`" in name:
+        raise ValueError(f"factor name {name!r} may not contain backticks")
+    return f"`{name}`"
 
 
 def response_surface_formula(
@@ -48,19 +63,19 @@ def response_surface_formula(
     if polynomial_order < 1:
         raise ValueError("polynomial_order must be at least 1")
 
-    all_factors = " + ".join(continuous + nominal)
+    all_factors = " + ".join(_quote(f) for f in continuous + nominal)
     if interaction_order == 1 or len(continuous) + len(nominal) == 1:
         rhs = all_factors
     else:
         rhs = f"({all_factors})**{interaction_order}"
     powers = [
-        f"I({name}**{degree})"
+        f"I({_quote(name)}**{degree})"
         for degree in range(2, polynomial_order + 1)
         for name in continuous
     ]
     if powers:
         rhs = rhs + " + " + " + ".join(powers)
-    return f"{response} ~ {rhs}"
+    return f"{_quote(response)} ~ {rhs}"
 
 
 __all__ = ["response_surface_formula"]

@@ -92,6 +92,23 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
         X, y = validate_data(self, X, y, y_numeric=True)
         if self.method not in _METHODS:
             raise ValueError(f"method must be one of {list(_METHODS)}")
+        if (
+            not isinstance(self.n_boot, (int, np.integer))
+            or isinstance(self.n_boot, bool)
+            or self.n_boot < 1
+        ):
+            raise ValueError("n_boot must be a positive integer")
+        if self.objective not in ("wAIC", "wBIC", "wSSE"):
+            raise ValueError("objective must be 'wAIC', 'wBIC', or 'wSSE'")
+        if self.weight_scheme not in ("SVEM", "FRW_plain", "Identity"):
+            raise ValueError(
+                "weight_scheme must be 'SVEM', 'FRW_plain', or 'Identity'"
+            )
+        alphas = np.atleast_1d(np.asarray(self.alphas, dtype=float))
+        if alphas.size == 0 or np.any(~np.isfinite(alphas)) or np.any(
+            (alphas <= 0) | (alphas > 1)
+        ):
+            raise ValueError("alphas must be finite values in (0, 1]")
         seed = self._derived_seed()
         names = getattr(self, "feature_names_in_", None)
         feature_names = None if names is None else tuple(str(n) for n in names)
@@ -142,6 +159,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
         (debiased when the estimator was fit with ``debias=True``).
         """
         check_is_fitted(self, "result_")
+        self._require_members("predict_interval")
         X = validate_data(self, X, reset=False)
         out = predict_svem(
             self.result_,
@@ -155,15 +173,28 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
     def predict_se(self, X):
         """Bootstrap standard errors of the member predictions."""
         check_is_fitted(self, "result_")
+        self._require_members("predict_se")
         X = validate_data(self, X, reset=False)
         out = predict_svem(self.result_, X, se_fit=True)
         return out["fit"], out["se.fit"]
 
+    def _require_members(self, method_name: str) -> None:
+        if self.result_.coef_matrix.shape[0] < 2:
+            raise ValueError(
+                f"{method_name} requires at least two bootstrap members; "
+                f"this model was fit with n_boot={self.result_.nBoot_used}. "
+                "Refit with n_boot >= 2."
+            )
+
     def _derived_seed(self) -> int | None:
         if self.random_state is None:
             return None
+        if isinstance(self.random_state, bool):
+            raise ValueError("random_state must be an int, RNG, or None")
         if isinstance(self.random_state, (int, np.integer)):
             return int(self.random_state)
+        if isinstance(self.random_state, np.random.Generator):
+            return int(self.random_state.integers(0, 2**31 - 1))
         return int(check_random_state(self.random_state).randint(0, 2**31 - 1))
 
     def __sklearn_tags__(self):

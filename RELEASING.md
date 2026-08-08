@@ -14,8 +14,9 @@ One-time setup, then each release is just a git tag.
    git push -u origin main
    ```
    CI (`.github/workflows/ci.yml`) runs the test suite on Python 3.10–3.13
-   (Linux) and 3.13 (Windows) on every push, plus a monthly cron canary
-   against the latest numpy/scikit-learn.
+   (Linux) and 3.13 (Windows) on every push to `main` and on every pull
+   request, plus a monthly cron canary against the latest
+   numpy/scikit-learn.
 3. **PyPI trusted publisher** (no API tokens needed):
    - Create/log into your account on https://pypi.org.
    - Go to *Your projects → Publishing → Add a new pending publisher* and

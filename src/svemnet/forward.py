@@ -248,6 +248,19 @@ def _is_finite(value: float | None) -> bool:
 ## ---------------------------------------------------------------------------
 
 
+def _group_index(value: object, name: str) -> int:
+    """Coerce one group column index to int, rejecting bools and floats."""
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(
+            f"group {name!r} column indices must be integers, not booleans"
+        )
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    raise ValueError(
+        f"group {name!r} column index {value!r} is not an integer"
+    )
+
+
 def _normalize_groups(
     groups: Mapping[str, Sequence[int]] | None,
     p: int,
@@ -256,28 +269,39 @@ def _normalize_groups(
     """Validate groups over X columns (0-based, intercept excluded).
 
     Returns ``((name, column_indices), ...)`` in candidate order. Columns not
-    covered by any group can never enter the model. Groups must be disjoint
-    and non-empty.
+    covered by any group can never enter the model. Groups must be disjoint,
+    non-empty, and uniquely named (selection frequencies are keyed by name).
+    An empty group set (``p == 0`` or an explicit empty mapping) yields an
+    intercept-only fit.
     """
     if groups is None:
-        return tuple((feature_names[j], (j,)) for j in range(p))
-    out: list[tuple[str, tuple[int, ...]]] = []
-    seen: set[int] = set()
-    for name, cols in groups.items():
-        idx = tuple(int(c) for c in cols)
-        if not idx:
-            raise ValueError(f"group {name!r} has no columns")
-        for c in idx:
-            if c < 0 or c >= p:
-                raise ValueError(
-                    f"group {name!r} column index {c} is outside [0, {p})"
-                )
-            if c in seen:
-                raise ValueError(f"column {c} appears in more than one group")
-            seen.add(c)
-        out.append((str(name), idx))
-    if not out:
-        raise ValueError("groups must contain at least one group")
+        out = [(feature_names[j], (j,)) for j in range(p)]
+    else:
+        out = []
+        seen: set[int] = set()
+        for name, cols in groups.items():
+            idx = tuple(_group_index(c, name) for c in cols)
+            if not idx:
+                raise ValueError(f"group {name!r} has no columns")
+            for c in idx:
+                if c < 0 or c >= p:
+                    raise ValueError(
+                        f"group {name!r} column index {c} is outside [0, {p})"
+                    )
+                if c in seen:
+                    raise ValueError(
+                        f"column {c} appears in more than one group"
+                    )
+                seen.add(c)
+            out.append((str(name), idx))
+    seen_names: set[str] = set()
+    for name, _ in out:
+        if name in seen_names:
+            raise ValueError(
+                f"duplicate group name {name!r}; group (and feature) names "
+                "must be unique because selection results are keyed by name"
+            )
+        seen_names.add(name)
     return tuple(out)
 
 
@@ -372,9 +396,17 @@ def forward_select(
         fit_warnings.append(msg)
         _warnings.warn(msg, stacklevel=2)
 
-    # Below this RSS scale (relative to the response energy), criterion
-    # differences are rounding noise, so selection stops.
-    dust = 1.0e-12 * max(float(np.dot(y_arr, y_arr)), float(np.finfo(float).tiny))
+    # Below this RSS scale, criterion differences are rounding noise and
+    # selection stops. The anchor is the intercept-only RSS (the signal
+    # scale after the mean is absorbed), with a response-energy floor for
+    # the degenerate constant-response case; anchoring to raw response
+    # energy would silently truncate selection for large-mean responses.
+    tiny = float(np.finfo(float).tiny)
+    eps = float(np.finfo(float).eps)
+    dust = max(
+        1.0e-12 * max(current_rss, tiny),
+        1.0e-12 * eps * max(float(np.dot(y_arr, y_arr)), tiny),
+    )
 
     step = 1
     while remaining and _is_finite(current_value) and current_rss > dust:
@@ -427,6 +459,13 @@ def forward_select(
             }
         )
         step += 1
+
+    if remaining and _is_finite(current_value) and current_rss <= dust:
+        fit_warnings.append(
+            "Selection stopped: residual sum of squares "
+            f"{current_rss:.3e} is at the numerical noise floor "
+            f"({dust:.3e}); remaining candidate terms were not evaluated."
+        )
 
     # Final diagnostics always come from one exact SVD refit.
     final_fit = _evaluate_subset(x, y_arr, path_indices)

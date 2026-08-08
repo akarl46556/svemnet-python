@@ -150,6 +150,28 @@ class TestFitSvemForward:
         np.testing.assert_allclose(result.coef_matrix[:, 1:], 0.0, atol=1e-10)
         np.testing.assert_allclose(result.coef_matrix[:, 0], 5.0, atol=1e-8)
 
+    def test_wsse_tie_selects_first_path_point_minimum(self):
+        # Exact linear response: every path point at/after the true 2-term
+        # model floors the wSSE score, producing exact ties. The documented
+        # first-path-point-minimum rule must pick the most parsimonious tied
+        # point; a last-minimum mutation would report selected_k = 5.
+        rng = np.random.default_rng(42)
+        X = rng.normal(size=(20, 4))
+        y = 2.0 + 1.5 * X[:, 0] - 0.5 * X[:, 1]
+        result = fit_svem_forward(X, y, nBoot=8, objective="wSSE", seed=7)
+        assert np.all(result.selected_k == 3)
+        assert result.selection_frequencies["x2"] == 0.0
+        assert result.selection_frequencies["x3"] == 0.0
+
+    def test_large_mean_response_is_not_truncated(self):
+        rng = np.random.default_rng(0)
+        n = 40
+        x1, x2 = rng.normal(size=(2, n))
+        y = 1e8 + 2 * x1 + rng.normal(0, 0.1, n)
+        result = fit_svem_forward(np.column_stack([x1, x2]), y, nBoot=6,
+                                  seed=1, feature_names=("x1", "x2"))
+        assert result.selection_frequencies["x1"] > 0.9
+
     def test_input_validation(self):
         X, y, _ = _toy()
         with pytest.raises(ValueError):
@@ -158,3 +180,5 @@ class TestFitSvemForward:
             fit_svem_forward(X, y, weight_scheme="bootstrap")
         with pytest.raises(ValueError):
             fit_svem_forward(X, y, nBoot=0)
+        with pytest.raises(ValueError, match="duplicate"):
+            fit_svem_forward(X, y, feature_names=("a",) * X.shape[1])

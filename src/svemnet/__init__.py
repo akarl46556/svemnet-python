@@ -47,6 +47,10 @@ from .forward import (
 
 __version__ = "0.1.0"
 
+# The formula-interface names (svem, forward_aicc, SVEMFormulaModel,
+# ForwardAICcModel) are provided lazily via __getattr__ and deliberately
+# excluded from __all__ so `from svemnet import *` works on installs
+# without the [formula] extra.
 __all__ = [
     "SVEMGaussianResult",
     "SVEMForwardResult",
@@ -61,11 +65,6 @@ __all__ = [
     "support_size",
     "weighted_ic_scores",
     "response_surface_formula",
-    # formula extra (lazy):
-    "svem",
-    "forward_aicc",
-    "SVEMFormulaModel",
-    "ForwardAICcModel",
     "__version__",
 ]
 
@@ -74,7 +73,17 @@ _FORMULA_EXPORTS = {"svem", "forward_aicc", "SVEMFormulaModel", "ForwardAICcMode
 
 def __getattr__(name: str):
     if name in _FORMULA_EXPORTS:
-        from . import formula as _formula
-
+        try:
+            from . import formula as _formula
+        except ImportError as exc:
+            raise AttributeError(
+                f"svemnet.{name} requires the optional formula dependencies "
+                "(formulaic, pandas). Install them with: "
+                "pip install svemnet[formula]"
+            ) from exc
         return getattr(_formula, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | _FORMULA_EXPORTS)

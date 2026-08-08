@@ -33,6 +33,17 @@ class TestResponseSurfaceFormula:
         formula = response_surface_formula("y", ["A"], ["F"])
         assert "I(F" not in formula
 
+    def test_non_identifier_names_are_backticked(self):
+        formula = response_surface_formula("y", ["flow-rate", "temp C"])
+        assert "`flow-rate`" in formula
+        assert "`temp C`" in formula
+        assert "I(`flow-rate`**2)" in formula
+        assert response_surface_formula("out come", ["A"]).startswith(
+            "`out come` ~"
+        )
+        with pytest.raises(ValueError, match="backtick"):
+            response_surface_formula("y", ["bad`name"])
+
     def test_validation(self):
         with pytest.raises(ValueError):
             response_surface_formula("y", [])

@@ -51,12 +51,9 @@ def _design_from_formula(formula: str, data: "pd.DataFrame"):
     contrast-block columns so factors enter forward paths as a unit.
     """
     matrices = Formula(formula).get_model_matrix(data)
-    try:
-        lhs, rhs = matrices
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "formula must be two-sided, e.g. 'y ~ X1 + X2'"
-        ) from exc
+    if not hasattr(matrices, "lhs") or not hasattr(matrices, "rhs"):
+        raise ValueError("formula must be two-sided, e.g. 'y ~ X1 + X2'")
+    lhs, rhs = matrices.lhs, matrices.rhs
     y = np.asarray(lhs, dtype=float)
     if y.ndim != 2 or y.shape[1] != 1:
         raise ValueError("formula must have a single numeric response")
@@ -85,6 +82,29 @@ def _design_from_formula(formula: str, data: "pd.DataFrame"):
     groups = {
         name: tuple(remap[c] for c in cols) for name, cols in groups.items()
     }
+
+    # A categorical level that is declared but never observed produces an
+    # all-zero contrast column, which would make its whole term group rank
+    # deficient (and so never selectable by the forward engines). Drop such
+    # columns with a warning; the level was never estimable anyway.
+    zero_cols = [j for j in range(X.shape[1]) if not np.any(X[:, j])]
+    if zero_cols:
+        dropped = [feature_names[j] for j in zero_cols]
+        _pywarnings.warn(
+            "dropping all-zero design column(s) "
+            f"{dropped}; a categorical predictor likely declares levels "
+            "absent from the data (consider .cat.remove_unused_categories()).",
+            stacklevel=3,
+        )
+        keep2 = [j for j in range(X.shape[1]) if j not in set(zero_cols)]
+        remap2 = {old: new for new, old in enumerate(keep2)}
+        X = X[:, keep2]
+        feature_names = tuple(feature_names[j] for j in keep2)
+        groups = {
+            name: tuple(remap2[c] for c in cols if c in remap2)
+            for name, cols in groups.items()
+        }
+        groups = {name: cols for name, cols in groups.items() if cols}
     return y, X, feature_names, groups, spec
 
 
@@ -108,10 +128,18 @@ class SVEMFormulaModel:
 
     def _design(self, data: "pd.DataFrame") -> np.ndarray:
         # formulaic warns and silently encodes unseen factor levels as the
-        # reference level, which would skew predictions; fail fast instead.
+        # reference level, and silently DROPS rows with missing values
+        # (shifting the returned predictions); fail fast on both instead.
         with _pywarnings.catch_warnings(record=True) as caught:
             _pywarnings.simplefilter("always")
-            rhs = self.model_spec_.get_model_matrix(data)
+            try:
+                rhs = self.model_spec_.get_model_matrix(data, na_action="raise")
+            except Exception as exc:
+                raise ValueError(
+                    "could not build the design matrix for the new data "
+                    f"({exc}). Rows with missing values in model variables "
+                    "must be dropped or imputed before predicting."
+                ) from exc
         for item in caught:
             if isinstance(item.message, DataMismatchWarning):
                 raise ValueError(

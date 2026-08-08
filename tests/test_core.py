@@ -152,3 +152,70 @@ class TestFitSvem:
         X[0, 0] = np.nan
         with pytest.raises(ValueError):
             fit_svem(X, y, nBoot=3)
+
+    def test_single_bootstrap_weight_roles(self):
+        """Pin the train/validation weight roles of the elastic-net core:
+        the lambda path must be fit with w_train and scored with w_valid
+        (plus Kish n_eff from w_valid). A role swap fails this test."""
+        from svemnet.core import _weighted_enet_path
+
+        X, y = _toy(n=30)
+        n = X.shape[0]
+        rng = np.random.default_rng(3)
+        u = rng.uniform(0.5, 0.999, size=n)  # sharply asymmetric roles
+        res = fit_svem(X, y, nBoot=1, seed=0, alpha=(1.0,),
+                       weight_uniforms=u[None, :])
+
+        w_train = -np.log(u)
+        w_train *= n / w_train.sum()
+        w_valid = -np.log1p(-u)
+        w_valid *= n / w_valid.sum()
+
+        np.testing.assert_allclose(
+            res.n_eff_raw[0],
+            w_valid.sum() ** 2 / np.dot(w_valid, w_valid),
+            rtol=1e-12,
+        )
+
+        lambdas, coef_path, _ = _weighted_enet_path(
+            X, y, w_train, l1_ratio=1.0, nlambda=500,
+            lambda_min_ratio=1e-4, solver_tol=1e-7, max_iter=100000,
+        )
+        pred = X @ coef_path[1:, :] + coef_path[0:1, :]
+        resid = pred - y[:, None]
+        sse = np.sum(w_valid[:, None] * resid**2, axis=0)
+        k = support_size(coef_path, base_tol=1e-7)
+        _, n_eff_adm = kish_effective_n(w_valid, n=n)
+        scores = weighted_ic_scores(
+            sse, k, n_like=float(w_valid.sum()), n_eff_adm=n_eff_adm,
+            objective="wAIC",
+        )
+        winner = int(np.nanargmin(scores))
+        np.testing.assert_allclose(
+            res.coef_matrix[0], coef_path[:, winner], atol=1e-10
+        )
+
+    def test_interval_level_semantics(self):
+        """A level-0.5 interval must be the 25th/75th member percentiles."""
+        X, y = _toy()
+        result = fit_svem(X, y, nBoot=20, seed=9)
+        out = predict_svem(result, X, interval=True, level=0.5)
+        member = X @ result.coef_matrix[:, 1:].T + result.coef_matrix[:, 0]
+        np.testing.assert_allclose(out["lwr"], np.quantile(member, 0.25, axis=1))
+        np.testing.assert_allclose(out["upr"], np.quantile(member, 0.75, axis=1))
+
+    def test_debias_uncertainty_uses_calibrated_members(self):
+        """se.fit/lwr/upr under debias=True must come from calibrated
+        member predictions a + b * yhat, not the raw members."""
+        X, y = _toy()
+        result = fit_svem(X, y, nBoot=15, seed=4, debias=True)
+        assert result.debias_params is not None
+        a, b = result.debias_params
+        out = predict_svem(result, X, debias=True, se_fit=True,
+                           interval=True, level=0.9)
+        member = X @ result.coef_matrix[:, 1:].T + result.coef_matrix[:, 0]
+        member_cal = a + b * member
+        np.testing.assert_allclose(out["fit"], member_cal.mean(axis=1))
+        np.testing.assert_allclose(out["se.fit"], member_cal.std(axis=1, ddof=1))
+        np.testing.assert_allclose(out["lwr"], np.quantile(member_cal, 0.05, axis=1))
+        np.testing.assert_allclose(out["upr"], np.quantile(member_cal, 0.95, axis=1))

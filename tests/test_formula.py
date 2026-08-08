@@ -41,11 +41,16 @@ class TestFormulaSvem:
             X, df.y.to_numpy(), nBoot=8, seed=5,
             feature_names=("X1", "X2", "X3", "X1:X2", "X1:X3", "X2:X3"),
         )
-        np.testing.assert_allclose(
-            np.sort(np.abs(model.result_.coefficients)),
-            np.sort(np.abs(direct.coefficients)),
-            atol=1e-8,
+        # Align coefficients term-by-term (order-sensitive, sign-sensitive)
+        by_name = dict(
+            zip(("Intercept",) + model.feature_names_,
+                model.result_.coefficients)
         )
+        aligned = np.array(
+            [by_name["Intercept"]]
+            + [by_name[name] for name in direct.feature_names]
+        )
+        np.testing.assert_allclose(aligned, direct.coefficients, atol=1e-8)
 
     def test_factor_blocks_group_in_forward(self):
         df = _toy_df(factor=True)
@@ -102,6 +107,58 @@ class TestFormulaSvem:
         df = _toy_df()
         with pytest.raises(ValueError, match="intercept"):
             svemnet.svem("y ~ X1 - 1", df, nBoot=3)
+
+    def test_predict_rejects_missing_values(self):
+        df = _toy_df()
+        model = svemnet.svem("y ~ X1 + X2", df, nBoot=6, seed=2)
+        new = df.iloc[:4][["X1", "X2"]].copy()
+        new.loc[new.index[1], "X1"] = np.nan
+        with pytest.raises(ValueError, match="[Mm]issing"):
+            model.predict(new)
+        bench = svemnet.forward_aicc("y ~ X1 + X2", df)
+        with pytest.raises(ValueError, match="[Mm]issing"):
+            bench.predict(new)
+
+    def test_unobserved_category_level_dropped_with_warning(self):
+        df = _toy_df(factor=True)
+        df["F"] = pd.Categorical(df["F"], categories=["a", "b", "c", "zz"])
+        with pytest.warns(UserWarning, match="all-zero"):
+            model = svemnet.svem("y ~ X1 + X2 + F", df, method="forward",
+                                 nBoot=10, seed=3)
+        # The observed levels remain selectable as a group
+        assert model.selection_frequencies["F"] > 0.8
+        assert not any("zz" in name for name in model.feature_names_)
+
+    def test_intercept_only_formula(self):
+        df = _toy_df()
+        model = svemnet.svem("y ~ 1", df, method="forward", nBoot=2,
+                             weight_scheme="Identity", seed=1)
+        np.testing.assert_allclose(
+            model.result_.coef_matrix[:, 0], df.y.mean(), atol=1e-8
+        )
+        preds = model.predict(df)
+        np.testing.assert_allclose(preds, df.y.mean(), atol=1e-8)
+
+    def test_one_sided_formula_rejected(self):
+        df = _toy_df()
+        with pytest.raises(ValueError, match="two-sided"):
+            svemnet.svem("~ X1 + X2", df, nBoot=3)
+
+    def test_backticked_names_fit(self):
+        df = _toy_df().rename(columns={"X1": "flow-rate", "X2": "temp C"})
+        formula = svemnet.response_surface_formula(
+            "y", ["flow-rate", "temp C"], polynomial_order=1
+        )
+        assert "`flow-rate`" in formula and "`temp C`" in formula
+        model = svemnet.forward_aicc(formula, df)
+        assert "`flow-rate`" in model.selected_terms or "flow-rate" in str(
+            model.selected_terms
+        )
+        coefs = model.coef_table()
+        # slope on the renamed X1 main effect is still ~2
+        row = [i for i in coefs.index if i.replace("`", "") == "flow-rate"]
+        assert len(row) == 1
+        assert abs(coefs.loc[row[0], "coefficient"] - 2.0) < 0.5
 
     def test_invalid_method(self):
         df = _toy_df()

@@ -88,3 +88,39 @@ class TestSVEMRegressor:
         db = SVEMRegressor(n_boot=15, random_state=3, debias=True).fit(X, y)
         assert db.result_.debias_applied
         assert not np.allclose(raw.coef_, db.coef_)
+
+    def test_generator_random_state(self):
+        X, y = _toy()
+        p1 = SVEMRegressor(
+            n_boot=6, random_state=np.random.default_rng(11)
+        ).fit(X, y).predict(X)
+        p2 = SVEMRegressor(
+            n_boot=6, random_state=np.random.default_rng(11)
+        ).fit(X, y).predict(X)
+        np.testing.assert_array_equal(p1, p2)
+
+    def test_uncertainty_requires_two_members(self):
+        X, y = _toy()
+        est = SVEMRegressor(n_boot=1, random_state=0).fit(X, y)
+        with pytest.raises(ValueError, match="n_boot"):
+            est.predict_interval(X)
+        with pytest.raises(ValueError, match="n_boot"):
+            est.predict_se(X)
+
+    def test_sklearn_named_parameter_errors(self):
+        X, y = _toy()
+        with pytest.raises(ValueError, match="n_boot"):
+            SVEMRegressor(n_boot=1.5).fit(X, y)
+        with pytest.raises(ValueError, match="alphas"):
+            SVEMRegressor(alphas=(0.5, 2.0)).fit(X, y)
+        with pytest.raises(ValueError, match="objective"):
+            SVEMRegressor(objective="AICc").fit(X, y)
+
+    def test_star_import_and_dir(self):
+        import svemnet
+
+        namespace = {}
+        exec("from svemnet import *", namespace)
+        assert "fit_svem" in namespace and "SVEMRegressor" in namespace
+        assert "svem" in dir(svemnet)
+        assert "forward_aicc" in dir(svemnet)

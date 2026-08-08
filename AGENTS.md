@@ -44,9 +44,12 @@ Deliberate, documented deviations from the reference implementation (do not
 "fix" these back): (1) plain groups instead of the ModelMatrix framework;
 (2) an added plain-"AIC" criterion; (3) column equilibration inside
 `_evaluate_subset` before `lstsq` (prevents rank truncation with badly
-scaled columns, e.g. raw timestamps); (4) a dust guard stopping
-`forward_select` when current RSS < 1e-12 × response energy; (5) no heredity
-rules, `path_minimum`, or FitResult metadata.
+scaled columns, e.g. raw timestamps); (4) a noise-floor guard stopping
+`forward_select` when the current RSS falls below
+max(1e-12 × intercept-only RSS, 1e-12 × eps × response energy) — anchored to
+the intercept-only RSS so large-mean responses are not truncated, with a
+recorded warning when it fires (the R package uses the same rule as of
+3.5.0); (5) no heredity rules, `path_minimum`, or FitResult metadata.
 
 ## The parity contract (most important invariant)
 
