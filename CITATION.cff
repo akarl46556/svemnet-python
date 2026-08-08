@@ -1,0 +1,47 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite the SVEMnet paper (preferred
+  citation below) for the software and Lemkus et al. (2021) for the SVEM
+  method.
+type: software
+title: "svemnet: Self-Validated Ensemble Models (SVEM) for Python"
+authors:
+  - family-names: Karl
+    given-names: Andrew T.
+    email: akarl@asu.edu
+    orcid: "https://orcid.org/0000-0002-5933-8706"
+license: MIT
+repository-code: "https://github.com/USER/svemnet-python"
+keywords:
+  - SVEM
+  - self-validated ensemble models
+  - design of experiments
+  - lasso
+  - elastic net
+  - forward selection
+  - chemometrics
+preferred-citation:
+  type: article
+  title: "SVEMnet: Self-Validated Ensemble Models in R"
+  authors:
+    - family-names: Karl
+      given-names: Andrew T.
+  journal: "Chemometrics and Intelligent Laboratory Systems"
+  year: 2026
+  doi: 10.1016/j.chemolab.2026.105660
+references:
+  - type: article
+    title: "Self-Validated Ensemble Models for design of experiments"
+    authors:
+      - family-names: Lemkus
+        given-names: Trent
+      - family-names: Gotwalt
+        given-names: Christopher
+      - family-names: Ramsey
+        given-names: Philip
+      - family-names: Weese
+        given-names: Maria L.
+    journal: "Chemometrics and Intelligent Laboratory Systems"
+    volume: 219
+    year: 2021
+    doi: 10.1016/j.chemolab.2021.104439

@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "svemnet"
+version = "0.1.0"
+description = "Self-Validated Ensemble Models (SVEM) for small-sample design-of-experiments regression: SVEM lasso / elastic net and SVEM forward selection with validation-weighted information criteria."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Andrew T. Karl", email = "akarl@asu.edu" }]
+keywords = [
+  "SVEM",
+  "self-validated ensemble",
+  "design of experiments",
+  "DOE",
+  "lasso",
+  "elastic net",
+  "forward selection",
+  "chemometrics",
+  "small sample",
+  "fractional random weights",
+  "SVEMnet",
+  "JMP",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Mathematics",
+]
+dependencies = [
+  "numpy>=1.24",
+  "scikit-learn>=1.6",
+]
+
+[project.optional-dependencies]
+formula = [
+  "formulaic>=1.1",
+  "pandas>=2.0",
+]
+test = [
+  "pytest>=8",
+  "formulaic>=1.1",
+  "pandas>=2.0",
+]
+
+[project.urls]
+# TODO(release): replace USER with the actual GitHub owner before first publish
+Homepage = "https://github.com/USER/svemnet-python"
+Source = "https://github.com/USER/svemnet-python"
+Issues = "https://github.com/USER/svemnet-python/issues"
+"R package (CRAN)" = "https://CRAN.R-project.org/package=SVEMnet"
+"SVEMnet paper (Chemometrics and Intelligent Laboratory Systems)" = "https://doi.org/10.1016/j.chemolab.2026.105660"
+"SVEM method paper (Lemkus et al. 2021)" = "https://doi.org/10.1016/j.chemolab.2021.104439"
+"Whole-model test paper (Karl 2024)" = "https://doi.org/10.1016/j.chemolab.2024.105122"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/svemnet"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+  # sklearn's parametrize_with_checks passes a generator; harmless upstream issue
+  "ignore::pytest.PytestRemovedIn10Warning",
+]
