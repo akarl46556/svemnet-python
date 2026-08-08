@@ -57,10 +57,11 @@ test = [
 Homepage = "https://github.com/akarl46556/svemnet-python"
 Source = "https://github.com/akarl46556/svemnet-python"
 Issues = "https://github.com/akarl46556/svemnet-python/issues"
+# PyPI limits Project-URL labels to 32 characters
 "R package (CRAN)" = "https://CRAN.R-project.org/package=SVEMnet"
-"SVEMnet paper (Chemometrics and Intelligent Laboratory Systems)" = "https://doi.org/10.1016/j.chemolab.2026.105660"
-"SVEM method paper (Lemkus et al. 2021)" = "https://doi.org/10.1016/j.chemolab.2021.104439"
-"Whole-model test paper (Karl 2024)" = "https://doi.org/10.1016/j.chemolab.2024.105122"
+"SVEMnet paper (Karl 2026)" = "https://doi.org/10.1016/j.chemolab.2026.105660"
+"SVEM method paper (Lemkus 2021)" = "https://doi.org/10.1016/j.chemolab.2021.104439"
+"Whole-model test (Karl 2024)" = "https://doi.org/10.1016/j.chemolab.2024.105122"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/svemnet"]
