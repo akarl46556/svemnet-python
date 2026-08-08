@@ -5,12 +5,12 @@ One-time setup, then each release is just a git tag.
 ## One-time setup
 
 1. **Create the GitHub repository** (suggested name: `svemnet-python`, owner:
-   your GitHub account). Then replace `USER` with the actual owner in:
+   your GitHub account). Then the URLs below already point at `akarl46556`:
    - `pyproject.toml` (`[project.urls]`)
    - `CITATION.cff` (`repository-code`)
 2. **Push this repo**:
    ```bash
-   git remote add origin https://github.com/USER/svemnet-python.git
+   git remote add origin https://github.com/akarl46556/svemnet-python.git
    git push -u origin main
    ```
    CI (`.github/workflows/ci.yml`) runs the test suite on Python 3.10–3.13
@@ -20,7 +20,7 @@ One-time setup, then each release is just a git tag.
 3. **PyPI trusted publisher** (no API tokens needed):
    - Create/log into your account on https://pypi.org.
    - Go to *Your projects → Publishing → Add a new pending publisher* and
-     register: project name `svemnet`, owner `USER`, repository
+     register: project name `svemnet`, owner `akarl46556`, repository
      `svemnet-python`, workflow `release.yml`, environment `pypi`.
    - In the GitHub repo: *Settings → Environments → New environment* named
      `pypi` (optionally require your review before deployments).

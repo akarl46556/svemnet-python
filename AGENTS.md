@@ -23,9 +23,8 @@ optional R-style formula interface (`svemnet.svem`, `svemnet.forward_aicc`).
   first publish claims it). Releases are git tags (`v*`) published by
   `.github/workflows/release.yml` via PyPI **trusted publishing** — no API
   tokens. Setup steps and the release process live in `RELEASING.md`.
-- **GitHub**: repository to be created by Andrew; `USER` placeholders in
-  `pyproject.toml` and `CITATION.cff` must be replaced with the real owner
-  before the first publish.
+- **GitHub**: https://github.com/akarl46556/svemnet-python (owner:
+  akarl46556; URLs in `pyproject.toml` and `CITATION.cff` point there).
 - **conda-forge**: deliberately deferred; see `RELEASING.md`.
 - Cross-links: the README, PyPI Project-URLs, and CITATION.cff point to the
   CRAN R package and the Chemometrics and Intelligent Laboratory Systems

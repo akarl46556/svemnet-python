@@ -11,7 +11,7 @@ authors:
     email: akarl@asu.edu
     orcid: "https://orcid.org/0000-0002-5933-8706"
 license: MIT
-repository-code: "https://github.com/USER/svemnet-python"
+repository-code: "https://github.com/akarl46556/svemnet-python"
 keywords:
   - SVEM
   - self-validated ensemble models
