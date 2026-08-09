@@ -71,3 +71,19 @@ def test_estimator_kind_prediction():
     assert np.all((iv_p[:, 1] - iv_p[:, 0]) > (iv_c[:, 1] - iv_c[:, 0]))
     with pytest.raises(ValueError, match="kind"):
         est.predict_interval(X[:2], kind="wrong")
+
+
+def test_forward_pi_scalars_and_prediction_interval():
+    from svemnet.forward import fit_svem_forward
+
+    X, y = _toy()
+    res = fit_svem_forward(X, y, nBoot=30, seed=13)
+    assert res.pi_sigma is not None and res.pi_sigma > 0.0
+    assert res.pi_df is not None and 1.0 <= res.pi_df <= X.shape[0]
+    c = predict_svem(res, X[:4], interval="confidence", level=0.9)
+    p = predict_svem(res, X[:4], interval="prediction", level=0.9)
+    assert np.all((p["upr"] - p["lwr"]) > (c["upr"] - c["lwr"]))
+    # determinism given seed
+    res2 = fit_svem_forward(X, y, nBoot=30, seed=13)
+    assert res.pi_sigma == res2.pi_sigma and res.pi_df == res2.pi_df
+    np.testing.assert_array_equal(res.coef_matrix, res2.coef_matrix)

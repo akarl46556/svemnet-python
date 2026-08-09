@@ -2,6 +2,12 @@
 
 ## 0.2.0 (unreleased)
 
+- `interval="prediction"` also works for forward-selection ensembles:
+  `fit_svem_forward` now computes and stores the same `pi_sigma`/`pi_df`
+  scalars (validation-weighted member residual scale; support-size df)
+  from quantities already in its loop, with no change to the fit's
+  random-number stream (bootstrap-by-bootstrap parity preserved).
+
 - New: `interval="prediction"` in `predict_svem` / `SVEMGaussianResult.predict`
   and `kind="prediction"` in `SVEMRegressor.predict_interval` — an interval
   for a new observation at x, computed as

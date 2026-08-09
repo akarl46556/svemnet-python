@@ -533,6 +533,8 @@ class SVEMForwardResult:
     n_eff_adm: np.ndarray
     fallback_mask: np.ndarray
     selection_frequencies: Mapping[str, float]
+    pi_sigma: float | None = None
+    pi_df: float | None = None
 
     def predict(
         self,
@@ -738,6 +740,7 @@ def fit_svem_forward(
     rng = np.random.default_rng(seed)
 
     boot_fits: list[_BootstrapFit] = []
+    valid_sse_values: list[float] = []
     for boot_index in range(nBoot_int):
         uniforms = None if uniform_matrix is None else uniform_matrix[boot_index]
         w_train, w_valid = make_svem_weights(
@@ -756,6 +759,14 @@ def fit_svem_forward(
                 objective=objective,
             )
         )
+        # Validation-weighted SSE for the prediction-interval scalars,
+        # computed from quantities already in scope (no extra RNG draws).
+        coef_b = boot_fits[-1].coefficients
+        if np.all(np.isfinite(coef_b)):
+            resid_b = y_arr - (X_arr @ coef_b[1:] + coef_b[0])
+            valid_sse_values.append(float(np.sum(w_valid * resid_b * resid_b)))
+        else:
+            valid_sse_values.append(float("nan"))
 
     coef_matrix = np.vstack([fit.coefficients for fit in boot_fits])
     finite_rows = np.all(np.isfinite(coef_matrix), axis=1)
@@ -801,6 +812,16 @@ def fit_svem_forward(
     n_eff_raw_arr = np.asarray([fit.n_eff_raw for fit in used_fits], dtype=float)
     n_eff_adm_arr = np.asarray([fit.n_eff_adm for fit in used_fits], dtype=float)
     fallback_arr = np.asarray([fit.fallback for fit in used_fits], dtype=bool)
+
+    valid_sse_arr = np.asarray(valid_sse_values, dtype=float)[finite_rows]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        member_df = np.maximum(n - selected_k.astype(float), 1.0)
+        member_sig2 = valid_sse_arr / member_df
+    finite_sig2 = member_sig2[np.isfinite(member_sig2)]
+    pi_sigma = float(np.sqrt(np.median(finite_sig2))) if finite_sig2.size else None
+    pi_df = (
+        float(max(n - float(np.median(selected_k)), 1.0)) if selected_k.size else None
+    )
 
     diagnostics: dict[str, object] = {
         "k_summary": {
@@ -873,6 +894,8 @@ def fit_svem_forward(
         n_eff_adm=n_eff_adm_arr,
         fallback_mask=fallback_arr,
         selection_frequencies=selection_frequencies,
+        pi_sigma=pi_sigma,
+        pi_df=pi_df,
     )
 
 

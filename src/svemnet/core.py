@@ -491,7 +491,7 @@ def predict_svem(
         ddof = 1 if member_preds.shape[1] > 1 else 0
         out["se.fit"] = np.std(member_preds, axis=1, ddof=ddof)
     if interval and interval_kind == "prediction":
-        if result.pi_sigma is None or result.pi_df is None:
+        if getattr(result, "pi_sigma", None) is None or getattr(result, "pi_df", None) is None:
             raise ValueError(
                 "interval='prediction' requires pi_sigma/pi_df from the fit; "
                 "re-fit with this svemnet version to populate them"
