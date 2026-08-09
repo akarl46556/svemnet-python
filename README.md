@@ -38,9 +38,13 @@ model = svemnet.svem("y ~ (X1 + X2 + X3)**2", df, method="forward", seed=1)
 model.selection_frequencies          # per-term bootstrap selection rates
 model.coef_table()                   # coefficients + % bootstraps nonzero
 
-# Bootstrap percentile intervals
+# Ensemble-spread percentile intervals (summary of member predictions
+# for the fitted mean; not an interval for a new observation)
 out = model.predict(new_df, interval=True, level=0.90)
 out["fit"], out["lwr"], out["upr"]
+
+# Prediction intervals for a NEW observation at x
+out = model.predict(new_df, interval="prediction", level=0.90)
 
 # Deterministic forward selection by AICc (single-model benchmark)
 bench = svemnet.forward_aicc("y ~ (X1 + X2 + X3)**2", df)

@@ -45,7 +45,7 @@ from .forward import (
     forward_select,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # The formula-interface names (svem, forward_aicc, SVEMFormulaModel,
 # ForwardAICcModel) are provided lazily via __getattr__ and deliberately

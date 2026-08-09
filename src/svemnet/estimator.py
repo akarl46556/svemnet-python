@@ -150,14 +150,23 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
         X = validate_data(self, X, reset=False)
         return np.asarray(X @ self.coef_ + self.intercept_, dtype=float)
 
-    def predict_interval(self, X, confidence_level: float = 0.9):
-        """Point predictions with bootstrap percentile intervals.
+    def predict_interval(
+        self, X, confidence_level: float = 0.9, kind: str = "confidence"
+    ):
+        """Point predictions with bootstrap intervals.
 
         Returns ``(y_pred, intervals)`` where ``intervals`` has shape
-        ``(n_samples, 2)`` holding the lower and upper percentile bounds of
-        the per-bootstrap member predictions at ``confidence_level``
-        (debiased when the estimator was fit with ``debias=True``).
+        ``(n_samples, 2)``. With ``kind="confidence"`` (default, unchanged
+        behavior) these are the lower/upper percentile bounds of the
+        per-bootstrap member predictions at ``confidence_level`` (debiased
+        when the estimator was fit with ``debias=True``) — an
+        ensemble-spread summary for the fitted mean. With
+        ``kind="prediction"`` they form an interval for a NEW OBSERVATION:
+        ``fit +/- t_df * sqrt(sd_member^2 + pi_sigma^2)`` using the
+        validation-weighted residual scale stored at fit time.
         """
+        if kind not in ("confidence", "prediction"):
+            raise ValueError("kind must be 'confidence' or 'prediction'")
         check_is_fitted(self, "result_")
         self._require_members("predict_interval")
         X = validate_data(self, X, reset=False)
@@ -165,7 +174,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
             self.result_,
             X,
             se_fit=False,
-            interval=True,
+            interval=True if kind == "confidence" else "prediction",
             level=confidence_level,
         )
         return out["fit"], np.column_stack([out["lwr"], out["upr"]])

@@ -109,6 +109,8 @@ class SVEMGaussianResult:
     n_eff_adm: np.ndarray
     fallback_mask: np.ndarray
     coef_tol: float
+    pi_sigma: float | None = None
+    pi_df: float | None = None
 
     def predict(
         self,
@@ -116,7 +118,7 @@ class SVEMGaussianResult:
         *,
         debias: bool | None = None,
         se_fit: bool = False,
-        interval: bool = False,
+        interval: bool | str = False,
         level: float = 0.95,
     ) -> np.ndarray | dict[str, np.ndarray]:
         """Predict from a fitted SVEM Gaussian model.
@@ -126,6 +128,14 @@ class SVEMGaussianResult:
         ``debias=True``, the stored linear calibration ``a + b*yhat`` is
         applied to each member prediction before computing standard deviations
         and quantiles.
+
+        ``interval`` accepts ``True`` (equivalently ``"confidence"``) for the
+        percentile summary of member predictions — an ensemble-spread
+        confidence-style summary for the fitted mean — or ``"prediction"``
+        for an interval targeting a NEW OBSERVATION at ``X``:
+        ``fit +/- t_df * sqrt(sd_member^2 + pi_sigma^2)`` with the
+        validation-weighted residual scale ``pi_sigma`` and
+        ``df = n - median(member support size)`` stored at fit time.
         """
 
         return predict_svem(
@@ -247,6 +257,7 @@ def fit_svem(
     fallback_flags: list[bool] = []
     n_eff_raw_values: list[float] = []
     n_eff_adm_values: list[float] = []
+    valid_sse_values: list[float] = []
     warning_messages: list[str] = []
 
     for boot_index in range(nBoot_int):
@@ -266,6 +277,7 @@ def fit_svem(
         best_lambda = np.nan
         best_coef: np.ndarray | None = None
         best_k = 1
+        best_valid_sse = np.nan
 
         if p > 0:
             for l1_ratio in alpha_values:
@@ -311,6 +323,7 @@ def fit_svem(
                     best_lambda = float(lambdas[local_idx])
                     best_coef = coef_path[:, local_idx].copy()
                     best_k = int(k_path[local_idx])
+                    best_valid_sse = float(sse_w[local_idx])
 
         fallback = best_coef is None or not np.all(np.isfinite(best_coef))
         if fallback:
@@ -318,12 +331,15 @@ def fit_svem(
             best_alpha = np.nan
             best_lambda = np.nan
             best_k = 1
+            resid_fb = y_arr - best_coef[0]
+            best_valid_sse = float(np.sum(w_valid * resid_fb * resid_fb))
 
         coef_rows.append(best_coef)
         best_alphas.append(best_alpha)
         best_lambdas.append(best_lambda)
         k_selected.append(best_k)
         fallback_flags.append(bool(fallback))
+        valid_sse_values.append(best_valid_sse)
 
     coef_matrix = np.vstack(coef_rows) if coef_rows else np.empty((0, p + 1))
     finite_rows = np.all(np.isfinite(coef_matrix), axis=1)
@@ -337,6 +353,19 @@ def fit_svem(
     fallback_arr = np.asarray(fallback_flags, dtype=bool)[finite_rows]
     n_eff_raw_arr = np.asarray(n_eff_raw_values, dtype=float)[finite_rows]
     n_eff_adm_arr = np.asarray(n_eff_adm_values, dtype=float)[finite_rows]
+    valid_sse_arr = np.asarray(valid_sse_values, dtype=float)[finite_rows]
+
+    # Prediction-interval scalars: validation-weighted per-member residual
+    # variance with per-member support df (median-aggregated, robust to
+    # fallback members), and the t degrees of freedom n - median(k).
+    # Computed from quantities already in hand - no additional RNG draws,
+    # so bootstrap parity with earlier versions is preserved.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        member_df = np.maximum(n - k_arr.astype(float), 1.0)
+        member_sig2 = valid_sse_arr / member_df
+    finite_sig2 = member_sig2[np.isfinite(member_sig2)]
+    pi_sigma = float(np.sqrt(np.median(finite_sig2))) if finite_sig2.size else None
+    pi_df = float(max(n - float(np.median(k_arr)), 1.0)) if k_arr.size else None
 
     raw_coefficients = np.mean(coef_matrix, axis=0)
     raw_predictions = X_arr @ raw_coefficients[1:] + raw_coefficients[0]
@@ -403,6 +432,8 @@ def fit_svem(
         n_eff_adm=n_eff_adm_arr,
         fallback_mask=fallback_arr,
         coef_tol=float(coef_tol),
+        pi_sigma=pi_sigma,
+        pi_df=pi_df,
     )
 
 
@@ -412,18 +443,30 @@ def predict_svem(
     *,
     debias: bool | None = None,
     se_fit: bool = False,
-    interval: bool = False,
+    interval: bool | str = False,
     level: float = 0.95,
 ) -> np.ndarray | dict[str, np.ndarray]:
     """Predict from a :class:`SVEMGaussianResult`.
 
     The returned dictionary, when requested, follows the R predict method's
     component names: ``fit``, optional ``se.fit``, and optional ``lwr``/``upr``.
+    ``interval`` may be ``False``, ``True``/``"confidence"`` (percentile
+    ensemble-spread summary, as always), or ``"prediction"`` (new-observation
+    interval using the fit-time ``pi_sigma``/``pi_df`` scalars).
     """
 
     X_arr = _validate_X_new(X, len(result.feature_names))
     if not (0.0 < level < 1.0) or not np.isfinite(level):
         raise ValueError("level must be a finite number in (0, 1)")
+    if isinstance(interval, str):
+        if interval not in ("confidence", "prediction"):
+            raise ValueError(
+                "interval must be a bool, 'confidence', or 'prediction'"
+            )
+        interval_kind = interval
+        interval = True
+    else:
+        interval_kind = "confidence" if interval else ""
     use_debias = result.debias_applied if debias is None else bool(debias)
     if use_debias and result.debiased_coefficients is not None:
         point_coef = result.debiased_coefficients
@@ -447,7 +490,26 @@ def predict_svem(
     if se_fit:
         ddof = 1 if member_preds.shape[1] > 1 else 0
         out["se.fit"] = np.std(member_preds, axis=1, ddof=ddof)
-    if interval:
+    if interval and interval_kind == "prediction":
+        if result.pi_sigma is None or result.pi_df is None:
+            raise ValueError(
+                "interval='prediction' requires pi_sigma/pi_df from the fit; "
+                "re-fit with this svemnet version to populate them"
+            )
+        try:  # scipy arrives transitively via scikit-learn (a hard dep)
+            from scipy import stats as _sstats  # noqa: PLC0415
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(
+                "interval='prediction' requires scipy (installed alongside "
+                "scikit-learn)"
+            ) from exc
+        tcrit = float(_sstats.t.ppf(1.0 - (1.0 - float(level)) / 2.0, result.pi_df))
+        ddof = 1 if member_preds.shape[1] > 1 else 0
+        sd_member = np.std(member_preds, axis=1, ddof=ddof)
+        half = tcrit * np.sqrt(sd_member**2 + result.pi_sigma**2)
+        out["lwr"] = point - half
+        out["upr"] = point + half
+    elif interval:
         tail = (1.0 - float(level)) / 2.0
         out["lwr"] = np.quantile(member_preds, tail, axis=1)
         out["upr"] = np.quantile(member_preds, 1.0 - tail, axis=1)

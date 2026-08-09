@@ -75,9 +75,19 @@ Intentionally minimal so maintenance stays near zero. Do **not** add
 binomial responses, whole-model significance testing, random-search
 optimization, Thompson sampling, plotting, or new hard dependencies
 (hard deps: numpy + scikit-learn; `formulaic`/`pandas` only via the
-`[formula]` extra). Requests for those features are answered by pointing to
-the R package. If Andrew explicitly expands scope, update this file and the
-README scope section together.
+`[formula]` extra; scipy is used lazily for one t quantile and arrives
+transitively with scikit-learn). Requests for those features are answered by
+pointing to the R package. If Andrew explicitly expands scope, update this
+file and the README scope section together.
+
+Scope expansion (Andrew, 2026-08-09): prediction intervals for a new
+observation — `interval="prediction"` / `kind="prediction"` — using
+fit-time `pi_sigma`/`pi_df` scalars. The existing percentile interval is
+documented as an ensemble-spread summary for the fitted mean; its behavior
+is unchanged. Any change touching these numerics must keep the validation
+harness green (bootstrap-by-bootstrap parity of the fit itself is
+unaffected because the PI scalars are computed from quantities already in
+the loop, with no new RNG draws).
 
 ## Working on this repo
 
