@@ -66,7 +66,9 @@ builds standard response-surface formulas.
 ```python
 from svemnet import SVEMRegressor
 
-est = SVEMRegressor(method="forward", n_boot=200, random_state=0)
+est = SVEMRegressor(
+    method="forward", n_boot=200, random_state=0, n_jobs=-1
+)
 est.fit(X, y)                        # numeric matrix, no intercept column
 y_pred = est.predict(X_new)
 y_pred, intervals = est.predict_interval(X_new, confidence_level=0.9)
@@ -75,6 +77,21 @@ y_pred, intervals = est.predict_interval(X_new, confidence_level=0.9)
 `SVEMRegressor` is a conformant scikit-learn estimator: it works in
 `Pipeline`, `cross_val_score`, and `GridSearchCV`, and handles categoricals
 the scikit-learn way (`ColumnTransformer` / `OneHotEncoder`).
+
+## Parallel bootstrap fitting
+
+The bootstrap members are independent and can be fit concurrently in every
+SVEM interface: pass `n_jobs=-1` to use all available CPUs or a positive
+integer to set a worker limit. Process-based execution is preferred, and
+results are restored to bootstrap order before aggregation, so a fixed seed
+or `weight_uniforms` produces the same member sequence as serial fitting.
+
+The default `n_jobs=1` uses the direct serial loop and does not create a
+worker pool. Keep this default in JMP add-ins and other embedded Python
+interpreters. For nested workflows such as `GridSearchCV(n_jobs=-1)`, use
+`SVEMRegressor(n_jobs=1)` and parallelize at only the outer level. Process
+startup can also outweigh computation for small ensembles, which is why
+parallel fitting is opt-in.
 
 ## Coming from R SVEMnet or JMP
 

@@ -34,8 +34,9 @@ optional R-style formula interface (`svemnet.svem`, `svemnet.forward_aicc`).
 
 | File | Origin |
 |---|---|
-| `src/svemnet/core.py` | Near-verbatim copy of `26-evaluate/src/design_compare/selection/svemnet_python_core.py` (Andrew's validated research reference). Only edits: module context and the `n_samples` error message. Keep it close to the reference so future syncs stay diffable. |
+| `src/svemnet/core.py` | Numerical kernels remain a near-verbatim copy of `26-evaluate/src/design_compare/selection/svemnet_python_core.py` (Andrew's validated research reference). Package edits add module context, the `n_samples` message, prediction-interval scalars, and a top-level one-bootstrap worker used by ordered opt-in parallel orchestration. Keep the numerical body close to the reference so future syncs stay diffable. |
 | `src/svemnet/forward.py` | Lean standalone port of `forward_aicc.py` + `svem_forward.py` from the same repo, with plain `(name, column-indices)` groups replacing the research framework's ModelMatrix/EffectGroup classes. |
+| `src/svemnet/_parallel.py` | Package-local job-count validation and ordered joblib dispatch. Joblib is imported lazily only for opt-in parallel fits and is already required by scikit-learn; `n_jobs=1` never creates a pool. |
 | `src/svemnet/estimator.py`, `formula.py`, `expansion.py` | New for this package. |
 | R counterparts | `svemnet-update/SVEMnet/R/forward_selection.R` (`forward_aicc()`, `svem_forward()`, SVEMnet ≥ 3.5.0) is a port of the same reference engines. |
 

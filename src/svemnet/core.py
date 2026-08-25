@@ -13,10 +13,12 @@ SVEMnet core:
 * intercept-only fallback;
 * coefficient averaging over bootstrap members;
 * optional Gaussian linear debiasing/calibration;
-* bootstrap-member prediction standard errors and percentile intervals.
+* bootstrap-member prediction standard errors and percentile intervals;
+* optional ordered process parallelism across independent bootstrap members.
 
-No multiprocessing, threading, global RNG state, project imports, formulas,
-contrasts, blocking, binomial response, or relaxed-lasso refits are used here.
+No global RNG state, formulas, contrasts, blocking, binomial response, or
+relaxed-lasso refits are used here. Bootstrap parallelism is opt-in; the
+default path does not create a worker pool.
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ from typing import Iterable, Mapping, Sequence
 import warnings
 
 import numpy as np
+
+from . import _parallel
 
 # Lazy optional imports are essential in JMP's persistent Python interpreter:
 # an initial dependency miss may be repaired in-session, so a failed import must
@@ -165,6 +169,7 @@ def fit_svem(
     debias: bool = False,
     feature_names: Sequence[str] | None = None,
     weight_uniforms: Sequence[Sequence[float]] | np.ndarray | None = None,
+    n_jobs: int | None = 1,
 ) -> SVEMGaussianResult:
     """Fit a Gaussian SVEM ensemble with elastic-net base learners.
 
@@ -215,6 +220,11 @@ def fit_svem(
         Optional matrix with shape ``(nBoot, n)`` used as the shared uniforms
         for FRW/SVEM weights. This is a deterministic test/parity hook; default
         behavior draws from a local ``numpy.random.Generator``.
+    n_jobs:
+        Number of bootstrap workers. ``None`` and ``1`` use the pure serial
+        loop (the default); ``-1`` uses all available CPUs and other nonzero
+        integers follow joblib/scikit-learn conventions. Effective workers are
+        capped at ``nBoot``. Process-based parallelism is preferred.
     """
 
     _load_sklearn()
@@ -222,6 +232,7 @@ def fit_svem(
     X_arr, y_arr = _validate_xy(X, y)
     n, p = X_arr.shape
     nBoot_int = _validate_positive_int(nBoot, "nBoot")
+    parallel_config = _parallel._resolve_n_jobs(n_jobs, n_tasks=nBoot_int)
     nlambda_int = _validate_positive_int(nlambda, "nlambda")
     if objective not in _SUPPORTED_OBJECTIVES:
         raise ValueError(f"objective must be one of {sorted(_SUPPORTED_OBJECTIVES)}")
@@ -249,97 +260,76 @@ def fit_svem(
     )
 
     rng = np.random.default_rng(seed)
+    bootstrap_settings = _ElasticBootstrapSettings(
+        alpha_values=alpha_values,
+        objective=objective,
+        nlambda=nlambda_int,
+        lambda_min_ratio=float(lambda_min_ratio),
+        solver_tol=float(solver_tol),
+        max_iter=max_iter_int,
+        coef_tol=float(coef_tol),
+    )
 
-    coef_rows: list[np.ndarray] = []
-    best_alphas: list[float] = []
-    best_lambdas: list[float] = []
-    k_selected: list[int] = []
-    fallback_flags: list[bool] = []
-    n_eff_raw_values: list[float] = []
-    n_eff_adm_values: list[float] = []
-    valid_sse_values: list[float] = []
-    warning_messages: list[str] = []
-
-    for boot_index in range(nBoot_int):
-        uniforms = None if uniform_matrix is None else uniform_matrix[boot_index]
-        w_train, w_valid = make_svem_weights(
-            n,
-            rng,
-            scheme=weight_scheme,
-            uniforms=uniforms,
-        )
-        n_eff_raw, n_eff_adm = kish_effective_n(w_valid, n=n)
-        n_eff_raw_values.append(float(n_eff_raw))
-        n_eff_adm_values.append(float(n_eff_adm))
-
-        best_score = np.inf
-        best_alpha = np.nan
-        best_lambda = np.nan
-        best_coef: np.ndarray | None = None
-        best_k = 1
-        best_valid_sse = np.nan
-
-        if p > 0:
-            for l1_ratio in alpha_values:
-                path = _weighted_enet_path(
+    if parallel_config.serial:
+        # Keep the established serial behavior: draw one weight pair and fit
+        # one member immediately, without constructing or invoking an executor.
+        boot_fits: list[_ElasticBootstrapFit] = []
+        for boot_index in range(nBoot_int):
+            uniforms = None if uniform_matrix is None else uniform_matrix[boot_index]
+            w_train, w_valid = make_svem_weights(
+                n,
+                rng,
+                scheme=weight_scheme,
+                uniforms=uniforms,
+            )
+            boot_fits.append(
+                _fit_one_elastic_bootstrap(
+                    boot_index,
                     X_arr,
                     y_arr,
                     w_train,
-                    l1_ratio=float(l1_ratio),
-                    nlambda=nlambda_int,
-                    lambda_min_ratio=float(lambda_min_ratio),
-                    solver_tol=float(solver_tol),
-                    max_iter=max_iter_int,
+                    w_valid,
+                    bootstrap_settings,
                 )
-                if path is None:
-                    continue
-                lambdas, coef_path, path_warnings = path
-                warning_messages.extend(
-                    f"bootstrap {boot_index + 1}, alpha {l1_ratio:g}: {msg}"
-                    for msg in path_warnings
+            )
+    else:
+        # Draw every weight pair in bootstrap order on the caller process.
+        # Workers therefore consume no RNG state, and seeded fits retain the
+        # exact same stream as the serial implementation.
+        tasks: list[tuple[object, ...]] = []
+        for boot_index in range(nBoot_int):
+            uniforms = None if uniform_matrix is None else uniform_matrix[boot_index]
+            w_train, w_valid = make_svem_weights(
+                n,
+                rng,
+                scheme=weight_scheme,
+                uniforms=uniforms,
+            )
+            tasks.append(
+                (
+                    boot_index,
+                    X_arr,
+                    y_arr,
+                    w_train,
+                    w_valid,
+                    bootstrap_settings,
                 )
-                if coef_path.size == 0:
-                    continue
+            )
+        boot_fits = _parallel._run_parallel(
+            _fit_one_elastic_bootstrap,
+            tasks,
+            n_jobs=parallel_config.effective,
+        )
 
-                pred_path = X_arr @ coef_path[1:, :] + coef_path[0:1, :]
-                residuals = pred_path - y_arr[:, None]
-                sse_w = np.sum(w_valid[:, None] * residuals * residuals, axis=0)
-                sse_w = np.where(np.isfinite(sse_w), sse_w, np.inf)
-                k_path = support_size(coef_path, base_tol=float(coef_tol))
-                scores = weighted_ic_scores(
-                    sse_w,
-                    k_path,
-                    n_like=float(np.sum(w_valid)),
-                    n_eff_adm=float(n_eff_adm),
-                    objective=objective,
-                )
-                if not np.any(np.isfinite(scores)):
-                    continue
-                local_idx = int(np.nanargmin(scores))
-                local_score = float(scores[local_idx])
-                if local_score < best_score:
-                    best_score = local_score
-                    best_alpha = float(l1_ratio)
-                    best_lambda = float(lambdas[local_idx])
-                    best_coef = coef_path[:, local_idx].copy()
-                    best_k = int(k_path[local_idx])
-                    best_valid_sse = float(sse_w[local_idx])
-
-        fallback = best_coef is None or not np.all(np.isfinite(best_coef))
-        if fallback:
-            best_coef = _intercept_only_coefficients(y_arr, w_train, p)
-            best_alpha = np.nan
-            best_lambda = np.nan
-            best_k = 1
-            resid_fb = y_arr - best_coef[0]
-            best_valid_sse = float(np.sum(w_valid * resid_fb * resid_fb))
-
-        coef_rows.append(best_coef)
-        best_alphas.append(best_alpha)
-        best_lambdas.append(best_lambda)
-        k_selected.append(best_k)
-        fallback_flags.append(bool(fallback))
-        valid_sse_values.append(best_valid_sse)
+    coef_rows = [fit.coefficients for fit in boot_fits]
+    best_alphas = [fit.selected_alpha for fit in boot_fits]
+    best_lambdas = [fit.selected_lambda for fit in boot_fits]
+    k_selected = [fit.selected_k for fit in boot_fits]
+    fallback_flags = [fit.fallback for fit in boot_fits]
+    n_eff_raw_values = [fit.n_eff_raw for fit in boot_fits]
+    n_eff_adm_values = [fit.n_eff_adm for fit in boot_fits]
+    valid_sse_values = [fit.valid_sse for fit in boot_fits]
+    warning_messages = [message for fit in boot_fits for message in fit.warnings]
 
     coef_matrix = np.vstack(coef_rows) if coef_rows else np.empty((0, p + 1))
     finite_rows = np.all(np.isfinite(coef_matrix), axis=1)
@@ -404,6 +394,8 @@ def fit_svem(
         coef_tol=float(coef_tol),
         seed=seed,
         weight_uniforms_supplied=uniform_matrix is not None,
+        n_jobs_requested=parallel_config.requested,
+        n_jobs_effective=parallel_config.effective,
         debias_eligible=debiased_coefficients is not None,
         debias_applied=use_debiased,
     )
@@ -708,6 +700,122 @@ def _weighted_enet_path(
     return np.asarray(lambdas, dtype=float), coef_path, path_warnings
 
 
+@dataclass(frozen=True)
+class _ElasticBootstrapSettings:
+    alpha_values: np.ndarray
+    objective: str
+    nlambda: int
+    lambda_min_ratio: float
+    solver_tol: float
+    max_iter: int
+    coef_tol: float
+
+
+@dataclass(frozen=True)
+class _ElasticBootstrapFit:
+    coefficients: np.ndarray
+    selected_alpha: float
+    selected_lambda: float
+    selected_k: int
+    fallback: bool
+    n_eff_raw: float
+    n_eff_adm: float
+    valid_sse: float
+    warnings: tuple[str, ...]
+
+
+def _fit_one_elastic_bootstrap(
+    boot_index: int,
+    X: np.ndarray,
+    y: np.ndarray,
+    w_train: np.ndarray,
+    w_valid: np.ndarray,
+    settings: _ElasticBootstrapSettings,
+) -> _ElasticBootstrapFit:
+    """Fit and validation-score one elastic-net bootstrap member."""
+
+    # Spawned workers import this module afresh, so initialize the lazy
+    # scikit-learn globals inside the worker as well as in the public fitter.
+    _load_sklearn()
+    n, p = X.shape
+    n_eff_raw, n_eff_adm = kish_effective_n(w_valid, n=n)
+    warning_messages: list[str] = []
+
+    best_score = np.inf
+    best_alpha = np.nan
+    best_lambda = np.nan
+    best_coef: np.ndarray | None = None
+    best_k = 1
+    best_valid_sse = np.nan
+
+    if p > 0:
+        for l1_ratio in settings.alpha_values:
+            path = _weighted_enet_path(
+                X,
+                y,
+                w_train,
+                l1_ratio=float(l1_ratio),
+                nlambda=settings.nlambda,
+                lambda_min_ratio=settings.lambda_min_ratio,
+                solver_tol=settings.solver_tol,
+                max_iter=settings.max_iter,
+            )
+            if path is None:
+                continue
+            lambdas, coef_path, path_warnings = path
+            warning_messages.extend(
+                f"bootstrap {boot_index + 1}, alpha {l1_ratio:g}: {msg}"
+                for msg in path_warnings
+            )
+            if coef_path.size == 0:
+                continue
+
+            pred_path = X @ coef_path[1:, :] + coef_path[0:1, :]
+            residuals = pred_path - y[:, None]
+            sse_w = np.sum(w_valid[:, None] * residuals * residuals, axis=0)
+            sse_w = np.where(np.isfinite(sse_w), sse_w, np.inf)
+            k_path = support_size(coef_path, base_tol=settings.coef_tol)
+            scores = weighted_ic_scores(
+                sse_w,
+                k_path,
+                n_like=float(np.sum(w_valid)),
+                n_eff_adm=float(n_eff_adm),
+                objective=settings.objective,
+            )
+            if not np.any(np.isfinite(scores)):
+                continue
+            local_idx = int(np.nanargmin(scores))
+            local_score = float(scores[local_idx])
+            if local_score < best_score:
+                best_score = local_score
+                best_alpha = float(l1_ratio)
+                best_lambda = float(lambdas[local_idx])
+                best_coef = coef_path[:, local_idx].copy()
+                best_k = int(k_path[local_idx])
+                best_valid_sse = float(sse_w[local_idx])
+
+    fallback = best_coef is None or not np.all(np.isfinite(best_coef))
+    if fallback:
+        best_coef = _intercept_only_coefficients(y, w_train, p)
+        best_alpha = np.nan
+        best_lambda = np.nan
+        best_k = 1
+        resid_fb = y - best_coef[0]
+        best_valid_sse = float(np.sum(w_valid * resid_fb * resid_fb))
+
+    return _ElasticBootstrapFit(
+        coefficients=best_coef,
+        selected_alpha=float(best_alpha),
+        selected_lambda=float(best_lambda),
+        selected_k=int(best_k),
+        fallback=bool(fallback),
+        n_eff_raw=float(n_eff_raw),
+        n_eff_adm=float(n_eff_adm),
+        valid_sse=float(best_valid_sse),
+        warnings=tuple(warning_messages),
+    )
+
+
 def _intercept_only_coefficients(y: np.ndarray, weights: np.ndarray, p: int) -> np.ndarray:
     coef = np.zeros(p + 1, dtype=float)
     coef[0] = float(np.sum(weights * y) / np.sum(weights))
@@ -745,6 +853,8 @@ def _diagnostics(
     coef_tol: float,
     seed: int | None,
     weight_uniforms_supplied: bool,
+    n_jobs_requested: int | None,
+    n_jobs_effective: int,
     debias_eligible: bool,
     debias_applied: bool,
 ) -> dict[str, object]:
@@ -770,9 +880,12 @@ def _diagnostics(
             "rng": "numpy.random.default_rng",
             "seed": seed,
             "weight_uniforms_supplied": bool(weight_uniforms_supplied),
-            "serial": True,
+            "serial": n_jobs_effective == 1,
             "uses_global_rng": False,
-            "uses_multiprocessing_or_threads": False,
+            "uses_multiprocessing_or_threads": n_jobs_effective > 1,
+            "n_jobs_requested": n_jobs_requested,
+            "n_jobs_effective": int(n_jobs_effective),
+            "parallel_backend_preference": "processes",
             "sklearn_n_jobs": None,
             "objective": objective,
             "weight_scheme": weight_scheme,

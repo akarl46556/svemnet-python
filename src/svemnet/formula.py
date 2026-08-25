@@ -214,6 +214,7 @@ def svem(
     alphas: Sequence[float] = (0.5, 1.0),
     debias: bool = False,
     seed: int | None = None,
+    n_jobs: int | None = 1,
 ) -> SVEMFormulaModel:
     """Fit a Gaussian SVEM model from an R-style formula and a DataFrame.
 
@@ -222,7 +223,8 @@ def svem(
     (:func:`svemnet.core.fit_svem`); ``method="forward"`` uses
     forward-selection base learners (:func:`svemnet.forward.fit_svem_forward`)
     with whole-effect groups taken from the formula terms, so factor
-    contrast blocks enter together.
+    contrast blocks enter together. ``n_jobs`` controls bootstrap workers;
+    the default ``1`` remains serial for JMP and other embedded interpreters.
     """
     y, X, names, groups, spec = _design_from_formula(formula, data)
     if method == "elastic_net":
@@ -236,6 +238,7 @@ def svem(
             seed=seed,
             debias=debias,
             feature_names=names,
+            n_jobs=n_jobs,
         )
     elif method == "forward":
         result = fit_svem_forward(
@@ -248,6 +251,7 @@ def svem(
             groups=groups,
             feature_names=names,
             debias=debias,
+            n_jobs=n_jobs,
         )
     else:
         raise ValueError("method must be 'elastic_net' or 'forward'")

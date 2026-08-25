@@ -31,9 +31,10 @@ One-time setup, then each release is just a git tag.
 ## Each release
 
 ```bash
-# bump version in pyproject.toml and src/svemnet/__init__.py, commit, then:
-git tag v0.1.0
-git push origin v0.1.0
+# bump version in pyproject.toml and src/svemnet/__init__.py, commit, then
+# replace X.Y.Z below with that version:
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 The `release.yml` workflow builds the sdist/wheel and publishes to PyPI via

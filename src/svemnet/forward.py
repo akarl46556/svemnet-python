@@ -35,6 +35,7 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from . import _parallel
 from .core import (
     _FLOAT_EPS,
     _SUPPORTED_OBJECTIVES,
@@ -616,7 +617,6 @@ class _BootstrapFit:
 def _fit_one_bootstrap(
     x: np.ndarray,
     y: np.ndarray,
-    *,
     w_train: np.ndarray,
     w_valid: np.ndarray,
     groups: tuple[tuple[str, tuple[int, ...]], ...],
@@ -696,6 +696,7 @@ def fit_svem_forward(
     feature_names: Sequence[str] | None = None,
     debias: bool = False,
     weight_uniforms: Sequence[Sequence[float]] | np.ndarray | None = None,
+    n_jobs: int | None = 1,
 ) -> SVEMForwardResult:
     """Fit a Gaussian SVEM ensemble with forward-selection base learners.
 
@@ -716,11 +717,13 @@ def fit_svem_forward(
     multi-column terms enter together; the default treats every column as its
     own group. ``weight_uniforms`` is the deterministic test/parity hook: a
     ``(nBoot, n)`` matrix of shared uniforms used to construct the FRW
-    weights.
+    weights. ``n_jobs`` controls ordered bootstrap-level parallelism: ``None``
+    and ``1`` use the pure serial loop, while ``-1`` uses all available CPUs.
     """
     X_arr, y_arr = _validate_xy(X, y)
     n, p = X_arr.shape
     nBoot_int = _validate_positive_int(nBoot, "nBoot")
+    parallel_config = _parallel._resolve_n_jobs(n_jobs, n_tasks=nBoot_int)
     if objective not in _SUPPORTED_OBJECTIVES:
         raise ValueError(f"objective must be one of {sorted(_SUPPORTED_OBJECTIVES)}")
     if weight_scheme not in _SUPPORTED_WEIGHT_SCHEMES:
@@ -741,32 +744,60 @@ def fit_svem_forward(
 
     boot_fits: list[_BootstrapFit] = []
     valid_sse_values: list[float] = []
-    for boot_index in range(nBoot_int):
-        uniforms = None if uniform_matrix is None else uniform_matrix[boot_index]
-        w_train, w_valid = make_svem_weights(
-            n,
-            rng,
-            scheme=weight_scheme,
-            uniforms=uniforms,
-        )
-        boot_fits.append(
-            _fit_one_bootstrap(
-                x,
-                y_arr,
-                w_train=w_train,
-                w_valid=w_valid,
-                groups=shifted_groups,
-                objective=objective,
+    if parallel_config.serial:
+        for boot_index in range(nBoot_int):
+            uniforms = None if uniform_matrix is None else uniform_matrix[boot_index]
+            w_train, w_valid = make_svem_weights(
+                n,
+                rng,
+                scheme=weight_scheme,
+                uniforms=uniforms,
             )
+            boot_fits.append(
+                _fit_one_bootstrap(
+                    x,
+                    y_arr,
+                    w_train,
+                    w_valid,
+                    shifted_groups,
+                    objective,
+                )
+            )
+            # Validation-weighted SSE for the prediction-interval scalars,
+            # computed from quantities already in scope (no extra RNG draws).
+            coef_b = boot_fits[-1].coefficients
+            if np.all(np.isfinite(coef_b)):
+                resid_b = y_arr - (X_arr @ coef_b[1:] + coef_b[0])
+                valid_sse_values.append(float(np.sum(w_valid * resid_b * resid_b)))
+            else:
+                valid_sse_values.append(float("nan"))
+    else:
+        tasks: list[tuple[object, ...]] = []
+        validation_weights: list[np.ndarray] = []
+        for boot_index in range(nBoot_int):
+            uniforms = None if uniform_matrix is None else uniform_matrix[boot_index]
+            w_train, w_valid = make_svem_weights(
+                n,
+                rng,
+                scheme=weight_scheme,
+                uniforms=uniforms,
+            )
+            tasks.append(
+                (x, y_arr, w_train, w_valid, shifted_groups, objective)
+            )
+            validation_weights.append(w_valid)
+        boot_fits = _parallel._run_parallel(
+            _fit_one_bootstrap,
+            tasks,
+            n_jobs=parallel_config.effective,
         )
-        # Validation-weighted SSE for the prediction-interval scalars,
-        # computed from quantities already in scope (no extra RNG draws).
-        coef_b = boot_fits[-1].coefficients
-        if np.all(np.isfinite(coef_b)):
-            resid_b = y_arr - (X_arr @ coef_b[1:] + coef_b[0])
-            valid_sse_values.append(float(np.sum(w_valid * resid_b * resid_b)))
-        else:
-            valid_sse_values.append(float("nan"))
+        for fit, w_valid in zip(boot_fits, validation_weights):
+            coef_b = fit.coefficients
+            if np.all(np.isfinite(coef_b)):
+                resid_b = y_arr - (X_arr @ coef_b[1:] + coef_b[0])
+                valid_sse_values.append(float(np.sum(w_valid * resid_b * resid_b)))
+            else:
+                valid_sse_values.append(float("nan"))
 
     coef_matrix = np.vstack([fit.coefficients for fit in boot_fits])
     finite_rows = np.all(np.isfinite(coef_matrix), axis=1)
@@ -851,7 +882,12 @@ def fit_svem_forward(
             "rng": "numpy.random.default_rng",
             "seed": seed,
             "weight_uniforms_supplied": uniform_matrix is not None,
-            "serial": True,
+            "serial": parallel_config.serial,
+            "uses_global_rng": False,
+            "uses_multiprocessing_or_threads": not parallel_config.serial,
+            "n_jobs_requested": parallel_config.requested,
+            "n_jobs_effective": parallel_config.effective,
+            "parallel_backend_preference": "processes",
             "base_learner": "forward_selection_weighted_least_squares",
             "training_weight_application": "row_scaling_sqrt_w_train",
             "validation_scoring": (

@@ -55,6 +55,10 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
     random_state:
         Seed (int), NumPy RandomState/Generator, or None for
         non-deterministic fits.
+    n_jobs:
+        Bootstrap workers. ``None`` or ``1`` (the default) is serial; ``-1``
+        uses all available CPUs. Prefer one parallel level when this estimator
+        is itself used inside parallel cross-validation or grid search.
 
     Attributes
     ----------
@@ -77,6 +81,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
         debias: bool = False,
         groups: Mapping[str, Sequence[int]] | None = None,
         random_state: int | None = None,
+        n_jobs: int | None = 1,
     ) -> None:
         self.method = method
         self.n_boot = n_boot
@@ -86,6 +91,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
         self.debias = debias
         self.groups = groups
         self.random_state = random_state
+        self.n_jobs = n_jobs
 
     def fit(self, X, y):
         """Fit the SVEM ensemble."""
@@ -127,6 +133,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
                 seed=seed,
                 debias=self.debias,
                 feature_names=feature_names,
+                n_jobs=self.n_jobs,
             )
         else:
             self.result_ = fit_svem_forward(
@@ -139,6 +146,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
                 groups=self.groups,
                 feature_names=feature_names,
                 debias=self.debias,
+                n_jobs=self.n_jobs,
             )
         self.intercept_ = float(self.result_.coefficients[0])
         self.coef_ = np.asarray(self.result_.coefficients[1:], dtype=float).copy()

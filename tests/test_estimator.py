@@ -28,6 +28,17 @@ def test_sklearn_conformance(estimator, check):
 
 
 class TestSVEMRegressor:
+    @pytest.mark.parametrize("method", ["elastic_net", "forward"])
+    def test_n_jobs_is_forwarded_and_cloneable(self, method):
+        X, y = _toy(n=30)
+        est = SVEMRegressor(
+            method=method, n_boot=4, random_state=6, n_jobs=2
+        ).fit(X, y)
+        repro = est.result_.diagnostics["reproducibility"]
+        assert repro["n_jobs_requested"] == 2
+        assert repro["n_jobs_effective"] == 2
+        assert est.get_params()["n_jobs"] == 2
+
     def test_fit_predict_and_score(self):
         X, y = _toy()
         est = SVEMRegressor(n_boot=15, random_state=0).fit(X, y)

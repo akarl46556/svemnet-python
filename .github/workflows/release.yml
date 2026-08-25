@@ -1,6 +1,6 @@
 name: Release to PyPI
 
-# Releasing is: git tag v0.1.0 && git push origin v0.1.0
+# Releasing is: create and push a tag matching v* (see RELEASING.md).
 # Requires a PyPI "trusted publisher" configured for this repository and a
 # GitHub environment named "pypi" (see RELEASING.md).
 

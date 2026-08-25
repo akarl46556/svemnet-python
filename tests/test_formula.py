@@ -26,6 +26,16 @@ def _toy_df(n=50, seed=7, factor=False):
 
 
 class TestFormulaSvem:
+    def test_n_jobs_is_forwarded(self):
+        df = _toy_df(n=30)
+        model = svemnet.svem(
+            "y ~ X1 + X2", df, method="forward", nBoot=4, seed=3,
+            n_jobs=2,
+        )
+        repro = model.result_.diagnostics["reproducibility"]
+        assert repro["n_jobs_requested"] == 2
+        assert repro["n_jobs_effective"] == 2
+
     def test_matches_matrix_api(self):
         df = _toy_df()
         model = svemnet.svem(

@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-08-25)
+
+- New: deterministic, opt-in bootstrap parallelism through `n_jobs` in the
+  matrix, formula, and scikit-learn SVEM interfaces. The default `n_jobs=1`
+  remains a direct serial loop for JMP/embedded use; `n_jobs=-1` uses all
+  available CPUs. Bootstrap weights are generated on the caller process and
+  results are reassembled in bootstrap order, preserving seeded and injected-
+  uniform member parity. No new hard dependency is added.
 
 - `interval="prediction"` also works for forward-selection ensembles:
   `fit_svem_forward` now computes and stores the same `pi_sigma`/`pi_df`
