@@ -110,7 +110,7 @@ class ScreeningApp:
         self.center_polynomials_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             options,
-            text="Center polynomials like JMP",
+            text="Center polynomials",
             variable=self.center_polynomials_var,
         ).grid(row=0, column=3, columnspan=3, sticky="w")
         ttk.Label(options, text="Bootstraps:").grid(
@@ -124,15 +124,26 @@ class ScreeningApp:
             textvariable=self.boot_var,
             width=9,
         ).grid(row=1, column=1, sticky="w", padx=(6, 20), pady=(10, 0))
-        ttk.Label(options, text="Seed:").grid(
+        ttk.Label(options, text="Null vectors:").grid(
             row=1, column=2, sticky="w", pady=(10, 0)
+        )
+        self.null_vectors_var = tk.StringVar(value="0")
+        ttk.Spinbox(
+            options,
+            from_=0,
+            to=100000,
+            textvariable=self.null_vectors_var,
+            width=9,
+        ).grid(row=1, column=3, sticky="w", padx=(6, 20), pady=(10, 0))
+        ttk.Label(options, text="Seed:").grid(
+            row=1, column=4, sticky="w", pady=(10, 0)
         )
         self.seed_var = tk.StringVar(value="12345")
         ttk.Entry(options, textvariable=self.seed_var, width=12).grid(
-            row=1, column=3, sticky="w", padx=(6, 20), pady=(10, 0)
+            row=1, column=5, sticky="w", padx=(6, 0), pady=(10, 0)
         )
         ttk.Label(options, text="Workers:").grid(
-            row=1, column=4, sticky="w", pady=(10, 0)
+            row=2, column=0, sticky="w", pady=(10, 0)
         )
         self.jobs_var = tk.StringVar(value="-1")
         ttk.Spinbox(
@@ -141,14 +152,15 @@ class ScreeningApp:
             to=max(1, os.cpu_count() or 1),
             textvariable=self.jobs_var,
             width=7,
-        ).grid(row=1, column=5, sticky="w", padx=(6, 0), pady=(10, 0))
+        ).grid(row=2, column=1, sticky="w", padx=(6, 20), pady=(10, 0))
         ttk.Label(
             options,
             text=(
                 f"-1 = all available CPUs ({os.cpu_count() or 1} logical on "
-                "this computer); objective is always wAIC."
+                "this computer). Null vectors are independent standard-normal "
+                "main effects; objective is always wAIC."
             ),
-        ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(9, 0))
+        ).grid(row=2, column=2, columnspan=4, sticky="w", pady=(10, 0))
 
         footer = ttk.Frame(root, padding=10)
         footer.grid(row=2, column=0, sticky="ew")
@@ -228,12 +240,13 @@ class ScreeningApp:
             if not factors:
                 raise ValueError("select at least one factor")
             n_boot = int(self.boot_var.get())
+            n_null_vectors = int(self.null_vectors_var.get())
             seed = int(self.seed_var.get())
             n_jobs = int(self.jobs_var.get())
-            if n_boot < 1 or n_jobs == 0:
+            if n_boot < 1 or n_null_vectors < 0 or n_jobs == 0:
                 raise ValueError(
-                    "bootstraps must be positive; workers must be -1 or a "
-                    "nonzero integer"
+                    "bootstraps must be positive; null vectors must be "
+                    "nonnegative; workers must be -1 or a nonzero integer"
                 )
         except ValueError as exc:
             messagebox.showerror("Invalid selection", str(exc))
@@ -245,6 +258,7 @@ class ScreeningApp:
             "categorical": categorical,
             "model": self.model_var.get(),
             "center_polynomials": self.center_polynomials_var.get(),
+            "n_null_vectors": n_null_vectors,
             "n_boot": n_boot,
             "seed": seed,
             "n_jobs": n_jobs,
@@ -317,7 +331,10 @@ class ScreeningApp:
         plot_window = scroll_canvas.create_window(
             (0, 0), window=plot_inner, anchor="nw"
         )
-        figure = self.screening.make_pareto_figure(result.effect_usage)
+        figure = self.screening.make_pareto_figure(
+            result.effect_usage,
+            null_effects=result.design.null_effects,
+        )
         mpl_canvas = FigureCanvasTkAgg(figure, master=plot_inner)
         mpl_canvas.draw()
         mpl_widget = mpl_canvas.get_tk_widget()
@@ -413,6 +430,7 @@ def run_cli(args) -> int:
         categorical=args.categorical,
         model=model,
         center_polynomials=args.center_polynomials,
+        n_null_vectors=args.null_vectors,
         n_boot=args.bootstraps,
         seed=args.seed,
         n_jobs=args.jobs,
@@ -450,7 +468,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help=(
             "center uncoded continuous factors inside interactions and powers "
-            "like JMP (default: on)"
+            "while leaving main effects raw (default: on)"
+        ),
+    )
+    run.add_argument(
+        "--null-vectors",
+        type=int,
+        default=0,
+        help=(
+            "add this many independent standard-normal null main effects "
+            "(default: 0)"
         ),
     )
     run.add_argument("--bootstraps", type=int, default=200)

@@ -110,11 +110,17 @@ main effects plus all two-way interactions or a response surface (the same
 terms plus squares of continuous factors). The objective is fixed at wAIC,
 the default is 200 bootstrap members, and all available CPUs are used.
 
-**Center polynomials like JMP** is enabled by default. For each uncoded
+**Center polynomials** is enabled by default. For each uncoded
 continuous factor, the complete-case arithmetic mean is subtracted when
 constructing interactions and powers, while the main-effect column remains on
 its original scale. This matches JMP Fit Model's `Center Polynomials(1)`
 convention. The saved metadata records the setting and every center used.
+
+The optional **Null vectors** setting adds independent standard-normal noise
+columns as main effects only. The default is zero. Null effects use the same
+analysis seed for reproducibility, are excluded from interactions and squared
+terms, and appear in grey on the Pareto chart. Their use frequencies provide a
+direct visual noise benchmark for the selected experimental effects.
 
 The results window contains a vertically scrollable, row-spaced Pareto chart
 of whole-effect use, an effect-use table, and a parameter-nonzero table. The
@@ -130,6 +136,7 @@ svem-screening run experiment.csv \
   --categorical Catalyst \
   --model response-surface \
   --center-polynomials \
+  --null-vectors 5 \
   --bootstraps 200 \
   --jobs -1 \
   --output screening_results
@@ -138,6 +145,8 @@ svem-screening run experiment.csv \
 `--jobs -1` uses the package's existing deterministic all-CPU bootstrap
 implementation. Set `--jobs 1` when process startup would outweigh the fit.
 Use `--no-center-polynomials` to reproduce the uncentered polynomial basis.
+Omit `--null-vectors` (or set it to zero) to run without synthetic null
+effects.
 
 ## Coming from R SVEMnet or JMP
 
