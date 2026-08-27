@@ -39,6 +39,8 @@ class ScreeningDesign:
     factors: tuple[str, ...]
     categorical: tuple[str, ...]
     continuous: tuple[str, ...]
+    center_polynomials: bool
+    polynomial_centers: dict[str, float]
     rows_dropped: int
 
 
@@ -57,6 +59,8 @@ class ScreeningResult:
             "factors": list(self.design.factors),
             "categorical_factors": list(self.design.categorical),
             "continuous_factors": list(self.design.continuous),
+            "center_polynomials": self.design.center_polynomials,
+            "polynomial_centers": dict(self.design.polynomial_centers),
             "formula": self.design.formula,
             "rows_used": int(self.design.X.shape[0]),
             "rows_dropped": self.design.rows_dropped,
@@ -98,8 +102,15 @@ def build_screening_design(
     factors: Sequence[str],
     categorical: Sequence[str] = (),
     model: str = MODEL_INTERACTIONS,
+    center_polynomials: bool = True,
 ) -> ScreeningDesign:
-    """Construct a formulaic design matrix with whole-effect groups."""
+    """Construct a formulaic design matrix with whole-effect groups.
+
+    With ``center_polynomials=True``, uncoded continuous factors are centered
+    at their complete-case arithmetic means inside interactions and powers,
+    while their main-effect columns remain raw. This reproduces JMP Fit
+    Model's ``Center Polynomials(1)`` convention.
+    """
     factors = tuple(dict.fromkeys(factors))
     categorical_requested = tuple(dict.fromkeys(categorical))
     if response not in data.columns:
@@ -120,6 +131,8 @@ def build_screening_design(
         )
     if model not in MODEL_CHOICES:
         raise ValueError(f"model must be one of {MODEL_CHOICES}")
+    if not isinstance(center_polynomials, (bool, np.bool_)):
+        raise TypeError("center_polynomials must be True or False")
 
     selected = data.loc[:, [response, *factors]].copy()
     before = len(selected)
@@ -144,6 +157,13 @@ def build_screening_design(
     numeric = selected.loc[:, [response, *continuous]].to_numpy(dtype=float)
     if not np.all(np.isfinite(numeric)):
         raise ValueError("response and continuous factors must contain finite values")
+    constant = [
+        name
+        for name in continuous
+        if float(selected[name].max()) == float(selected[name].min())
+    ]
+    if constant:
+        raise ValueError(f"continuous factors must vary: {constant}")
 
     polynomial_order = 2 if model == MODEL_RESPONSE_SURFACE else 1
     formula = response_surface_formula(
@@ -153,7 +173,39 @@ def build_screening_design(
         interaction_order=2,
         polynomial_order=polynomial_order,
     )
-    y, X, feature_names, groups, _ = _design_from_formula(formula, selected)
+    y, X_raw, feature_names, groups, _ = _design_from_formula(formula, selected)
+    polynomial_centers: dict[str, float] = {}
+    X = X_raw
+    if center_polynomials:
+        polynomial_centers = {
+            name: float(selected[name].mean()) for name in continuous
+        }
+        centered = selected.copy()
+        for name, center in polynomial_centers.items():
+            centered[name] = centered[name] - center
+        (
+            centered_y,
+            centered_X,
+            centered_names,
+            centered_groups,
+            _,
+        ) = _design_from_formula(formula, centered)
+        if centered_names != feature_names or centered_groups != groups:
+            raise RuntimeError(
+                "centering changed the formulaic design structure unexpectedly"
+            )
+        if not np.array_equal(centered_y, y):
+            raise RuntimeError("centering changed the response unexpectedly")
+        X = centered_X.copy()
+        # JMP leaves uncoded continuous main effects on their original scale;
+        # only interaction and power construction uses centered factor values.
+        for name in continuous:
+            main_columns = groups.get(name)
+            if main_columns is None:
+                raise RuntimeError(
+                    f"could not identify the continuous main effect {name!r}"
+                )
+            X[:, main_columns] = X_raw[:, main_columns]
     return ScreeningDesign(
         data=selected,
         y=y,
@@ -165,6 +217,8 @@ def build_screening_design(
         factors=factors,
         categorical=nominal,
         continuous=continuous,
+        center_polynomials=bool(center_polynomials),
+        polynomial_centers=polynomial_centers,
         rows_dropped=before - len(selected),
     )
 
@@ -176,7 +230,8 @@ def run_screening(
     factors: Sequence[str],
     categorical: Sequence[str] = (),
     model: str = MODEL_INTERACTIONS,
-    n_boot: int = 100,
+    center_polynomials: bool = True,
+    n_boot: int = 200,
     seed: int | None = 12345,
     n_jobs: int | None = -1,
     progress: Callable[[int, int], None] | None = None,
@@ -188,6 +243,7 @@ def run_screening(
         factors=factors,
         categorical=categorical,
         model=model,
+        center_polynomials=center_polynomials,
     )
     if progress is not None:
         progress(0, n_boot)
@@ -251,8 +307,10 @@ def make_pareto_figure(effect_usage: pd.DataFrame):
     from matplotlib.figure import Figure
 
     table = effect_usage.sort_values("Percent Used", ascending=True)
-    height = max(4.0, min(12.0, 0.34 * len(table) + 1.5))
-    figure = Figure(figsize=(8.0, height), constrained_layout=True)
+    # Allocate a full text row per effect. The desktop app places this figure
+    # in a vertically scrollable canvas instead of shrinking it to the window.
+    height = max(4.8, min(80.0, 0.36 * len(table) + 1.8))
+    figure = Figure(figsize=(10.0, height), constrained_layout=True)
     axis = figure.add_subplot(111)
     axis.barh(table["Effect"], table["Percent Used"], color="#2878B5")
     axis.set_xlim(0, 100)
@@ -260,12 +318,18 @@ def make_pareto_figure(effect_usage: pd.DataFrame):
     axis.set_ylabel("")
     axis.set_title("SVEM Variable Screening — Effect Usage")
     axis.grid(axis="x", alpha=0.25)
+    axis.tick_params(axis="y", labelsize=9)
+    axis.margins(y=0.01)
     for patch, value in zip(axis.patches, table["Percent Used"]):
+        numeric_value = float(value)
+        inside = numeric_value >= 94.0
         axis.text(
-            min(float(value) + 1.0, 96.0),
+            numeric_value - 1.0 if inside else numeric_value + 0.8,
             patch.get_y() + patch.get_height() / 2,
-            f"{float(value):.1f}%",
+            f"{numeric_value:.1f}%",
             va="center",
+            ha="right" if inside else "left",
+            color="white" if inside else "#333333",
             fontsize=8,
         )
     return figure

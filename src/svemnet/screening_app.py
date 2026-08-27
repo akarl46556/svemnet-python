@@ -41,7 +41,7 @@ class ScreeningApp:
         self.events: queue.Queue = queue.Queue()
 
         root.title("SVEM Variable Screening")
-        root.minsize(920, 610)
+        root.minsize(1040, 680)
         root.columnconfigure(0, weight=1)
         root.rowconfigure(1, weight=1)
 
@@ -91,7 +91,7 @@ class ScreeningApp:
         options.grid(
             row=2, column=0, columnspan=3, sticky="ew", pady=(12, 0)
         )
-        for col in (1, 3, 5, 7):
+        for col in (1, 3, 5):
             options.columnconfigure(col, weight=1)
 
         ttk.Label(options, text="Candidate model:").grid(
@@ -104,24 +104,36 @@ class ScreeningApp:
             values=screening.MODEL_CHOICES,
             state="readonly",
             width=37,
-        ).grid(row=0, column=1, sticky="ew", padx=(6, 16))
-        ttk.Label(options, text="Bootstraps:").grid(
-            row=0, column=2, sticky="w"
+        ).grid(
+            row=0, column=1, columnspan=2, sticky="ew", padx=(6, 20)
         )
-        self.boot_var = tk.StringVar(value="100")
+        self.center_polynomials_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            options,
+            text="Center polynomials like JMP",
+            variable=self.center_polynomials_var,
+        ).grid(row=0, column=3, columnspan=3, sticky="w")
+        ttk.Label(options, text="Bootstraps:").grid(
+            row=1, column=0, sticky="w", pady=(10, 0)
+        )
+        self.boot_var = tk.StringVar(value="200")
         ttk.Spinbox(
             options,
             from_=1,
             to=100000,
             textvariable=self.boot_var,
             width=9,
-        ).grid(row=0, column=3, sticky="w", padx=(6, 16))
-        ttk.Label(options, text="Seed:").grid(row=0, column=4, sticky="w")
+        ).grid(row=1, column=1, sticky="w", padx=(6, 20), pady=(10, 0))
+        ttk.Label(options, text="Seed:").grid(
+            row=1, column=2, sticky="w", pady=(10, 0)
+        )
         self.seed_var = tk.StringVar(value="12345")
         ttk.Entry(options, textvariable=self.seed_var, width=12).grid(
-            row=0, column=5, sticky="w", padx=(6, 16)
+            row=1, column=3, sticky="w", padx=(6, 20), pady=(10, 0)
         )
-        ttk.Label(options, text="Workers:").grid(row=0, column=6, sticky="w")
+        ttk.Label(options, text="Workers:").grid(
+            row=1, column=4, sticky="w", pady=(10, 0)
+        )
         self.jobs_var = tk.StringVar(value="-1")
         ttk.Spinbox(
             options,
@@ -129,14 +141,14 @@ class ScreeningApp:
             to=max(1, os.cpu_count() or 1),
             textvariable=self.jobs_var,
             width=7,
-        ).grid(row=0, column=7, sticky="w", padx=(6, 0))
+        ).grid(row=1, column=5, sticky="w", padx=(6, 0), pady=(10, 0))
         ttk.Label(
             options,
             text=(
                 f"-1 = all available CPUs ({os.cpu_count() or 1} logical on "
                 "this computer); objective is always wAIC."
             ),
-        ).grid(row=1, column=0, columnspan=8, sticky="w", pady=(8, 0))
+        ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(9, 0))
 
         footer = ttk.Frame(root, padding=10)
         footer.grid(row=2, column=0, sticky="ew")
@@ -232,6 +244,7 @@ class ScreeningApp:
             "factors": factors,
             "categorical": categorical,
             "model": self.model_var.get(),
+            "center_polynomials": self.center_polynomials_var.get(),
             "n_boot": n_boot,
             "seed": seed,
             "n_jobs": n_jobs,
@@ -283,7 +296,7 @@ class ScreeningApp:
 
         window = self.tk.Toplevel(self.root)
         window.title("SVEM Variable Screening Results")
-        window.geometry("1050x720")
+        window.geometry("1150x800")
         window.columnconfigure(0, weight=1)
         window.rowconfigure(0, weight=1)
         tabs = ttk.Notebook(window)
@@ -291,10 +304,50 @@ class ScreeningApp:
 
         plot_frame = ttk.Frame(tabs)
         tabs.add(plot_frame, text="Pareto plot")
+        plot_frame.columnconfigure(0, weight=1)
+        plot_frame.rowconfigure(0, weight=1)
+        scroll_canvas = self.tk.Canvas(plot_frame, highlightthickness=0)
+        plot_scroll = ttk.Scrollbar(
+            plot_frame, orient="vertical", command=scroll_canvas.yview
+        )
+        scroll_canvas.configure(yscrollcommand=plot_scroll.set)
+        scroll_canvas.grid(row=0, column=0, sticky="nsew")
+        plot_scroll.grid(row=0, column=1, sticky="ns")
+        plot_inner = ttk.Frame(scroll_canvas)
+        plot_window = scroll_canvas.create_window(
+            (0, 0), window=plot_inner, anchor="nw"
+        )
         figure = self.screening.make_pareto_figure(result.effect_usage)
-        canvas = FigureCanvasTkAgg(figure, master=plot_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
+        mpl_canvas = FigureCanvasTkAgg(figure, master=plot_inner)
+        mpl_canvas.draw()
+        mpl_widget = mpl_canvas.get_tk_widget()
+        plot_height = max(650, int(figure.get_figheight() * figure.dpi))
+        mpl_widget.configure(height=plot_height)
+        mpl_widget.pack(fill="x", expand=True)
+
+        def update_scroll_region(_event=None):
+            scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
+
+        def resize_plot(event):
+            scroll_canvas.itemconfigure(plot_window, width=event.width)
+            mpl_widget.configure(width=event.width, height=plot_height)
+
+        def scroll_plot(event):
+            direction = -1 if getattr(event, "delta", 0) > 0 else 1
+            scroll_canvas.yview_scroll(3 * direction, "units")
+            return "break"
+
+        def scroll_plot_linux(event):
+            direction = -1 if event.num == 4 else 1
+            scroll_canvas.yview_scroll(3 * direction, "units")
+            return "break"
+
+        plot_inner.bind("<Configure>", update_scroll_region)
+        scroll_canvas.bind("<Configure>", resize_plot)
+        for widget in (scroll_canvas, mpl_widget):
+            widget.bind("<MouseWheel>", scroll_plot)
+            widget.bind("<Button-4>", scroll_plot_linux)
+            widget.bind("<Button-5>", scroll_plot_linux)
 
         def table_tab(title, frame_data):
             frame = ttk.Frame(tabs)
@@ -359,6 +412,7 @@ def run_cli(args) -> int:
         factors=args.factors,
         categorical=args.categorical,
         model=model,
+        center_polynomials=args.center_polynomials,
         n_boot=args.bootstraps,
         seed=args.seed,
         n_jobs=args.jobs,
@@ -390,7 +444,16 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("interactions", "response-surface"),
         default="interactions",
     )
-    run.add_argument("--bootstraps", type=int, default=100)
+    run.add_argument(
+        "--center-polynomials",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "center uncoded continuous factors inside interactions and powers "
+            "like JMP (default: on)"
+        ),
+    )
+    run.add_argument("--bootstraps", type=int, default=200)
     run.add_argument("--seed", type=int, default=12345)
     run.add_argument(
         "--jobs", type=int, default=-1, help="-1 uses all available CPUs"

@@ -108,12 +108,18 @@ columns are treated as categorical automatically; numeric factors can also
 be marked categorical in the third selector. The candidate model is either
 main effects plus all two-way interactions or a response surface (the same
 terms plus squares of continuous factors). The objective is fixed at wAIC,
-the default is 100 bootstrap members, and all available CPUs are used.
+the default is 200 bootstrap members, and all available CPUs are used.
 
-The results window contains a descending Pareto chart of whole-effect use,
-an effect-use table, and a parameter-nonzero table. The tables, chart, and
-run metadata can be saved together. Whole categorical contrast blocks enter
-forward-selection paths as a unit.
+**Center polynomials like JMP** is enabled by default. For each uncoded
+continuous factor, the complete-case arithmetic mean is subtracted when
+constructing interactions and powers, while the main-effect column remains on
+its original scale. This matches JMP Fit Model's `Center Polynomials(1)`
+convention. The saved metadata records the setting and every center used.
+
+The results window contains a vertically scrollable, row-spaced Pareto chart
+of whole-effect use, an effect-use table, and a parameter-nonzero table. The
+tables, full-height chart, and run metadata can be saved together. Whole
+categorical contrast blocks enter forward-selection paths as a unit.
 
 The equivalent command-line run is:
 
@@ -123,13 +129,15 @@ svem-screening run experiment.csv \
   --factors Temperature Pressure Catalyst \
   --categorical Catalyst \
   --model response-surface \
-  --bootstraps 100 \
+  --center-polynomials \
+  --bootstraps 200 \
   --jobs -1 \
   --output screening_results
 ```
 
 `--jobs -1` uses the package's existing deterministic all-CPU bootstrap
 implementation. Set `--jobs 1` when process startup would outweigh the fit.
+Use `--no-center-polynomials` to reproduce the uncentered polynomial basis.
 
 ## Coming from R SVEMnet or JMP
 
