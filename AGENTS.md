@@ -70,14 +70,20 @@ SVEMnet ≥ 3.5.0 available, then
 exact. If a numerical change is intentional on both sides, update the R
 package in `svemnet-update` in the same effort.
 
-## Scope freeze
+## Scope
 
-Intentionally minimal so maintenance stays near zero. Do **not** add
+The numerical library remains intentionally minimal so maintenance stays
+near zero. Andrew explicitly authorized the optional Python-only SVEM
+variable-screening desktop/CLI application in August 2026. It may use the
+existing process-parallel forward-selection engine and plotting/data
+dependencies through the ``[screening]`` extra; the core hard dependencies
+remain numpy and scikit-learn. Otherwise, do **not** add
 binomial responses, whole-model significance testing, random-search
-optimization, Thompson sampling, plotting, or new hard dependencies
+optimization, Thompson sampling, or new hard dependencies
 (hard deps: numpy + scikit-learn; `formulaic`/`pandas` only via the
-`[formula]` extra; scipy is used lazily for one t quantile and arrives
-transitively with scikit-learn). Requests for those features are answered by
+`[formula]` or `[screening]` extras; matplotlib only via `[screening]`; scipy
+is used lazily for one t quantile and arrives transitively with
+scikit-learn). Requests for those features are answered by
 pointing to the R package. If Andrew explicitly expands scope, update this
 file and the README scope section together.
 
