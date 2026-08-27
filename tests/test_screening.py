@@ -10,14 +10,34 @@ from svemnet.screening import (
     MODEL_INTERACTIONS,
     MODEL_RESPONSE_SURFACE,
     build_screening_design,
+    make_pareto_figure,
     run_screening,
 )
+from svemnet.screening_app import build_parser
 
 
-def test_screening_defaults_are_100_members_and_all_cpus():
+def test_screening_defaults_are_200_members_centered_and_all_cpus():
     signature = inspect.signature(run_screening)
-    assert signature.parameters["n_boot"].default == 100
+    assert signature.parameters["n_boot"].default == 200
+    assert signature.parameters["center_polynomials"].default is True
     assert signature.parameters["n_jobs"].default == -1
+    args = build_parser().parse_args(
+        ["run", "data.csv", "--response", "y", "--factors", "x"]
+    )
+    assert args.bootstraps == 200
+    assert args.center_polynomials is True
+    args = build_parser().parse_args(
+        [
+            "run",
+            "data.csv",
+            "--response",
+            "y",
+            "--factors",
+            "x",
+            "--no-center-polynomials",
+        ]
+    )
+    assert args.center_polynomials is False
 
 
 def test_design_expansion_handles_categorical_groups_and_response_surface():
@@ -41,10 +61,56 @@ def test_design_expansion_handles_categorical_groups_and_response_surface():
         model=MODEL_RESPONSE_SURFACE,
     )
     assert interactions.categorical == ("Catalyst",)
+    assert interactions.center_polynomials is True
     assert any("Temp:Catalyst" in name for name in interactions.groups)
     assert not any("I(Temp ** 2)" in name for name in interactions.groups)
     assert any("I(Temp ** 2)" in name for name in surface.groups)
     assert surface.X.shape[1] == interactions.X.shape[1] + 1
+
+
+def test_polynomial_centering_matches_jmp_fit_model_convention():
+    data = pd.DataFrame(
+        {
+            "Y": [1.0, 2.0, 4.0, 8.0, 15.0],
+            "X": [0.0, 1.0, 4.0, 10.0, 20.0],
+            "Z": [2.0, 3.0, 7.0, 11.0, 17.0],
+        }
+    )
+    centered = build_screening_design(
+        data,
+        response="Y",
+        factors=["X", "Z"],
+        model=MODEL_RESPONSE_SURFACE,
+        center_polynomials=True,
+    )
+    uncentered = build_screening_design(
+        data,
+        response="Y",
+        factors=["X", "Z"],
+        model=MODEL_RESPONSE_SURFACE,
+        center_polynomials=False,
+    )
+    columns = {name: i for i, name in enumerate(centered.feature_names)}
+    np.testing.assert_array_equal(centered.X[:, columns["X"]], data["X"])
+    np.testing.assert_array_equal(centered.X[:, columns["Z"]], data["Z"])
+    assert centered.X[0, columns["X:Z"]] == 42.0
+    assert centered.X[0, columns["I(X ** 2)"]] == 49.0
+    assert centered.polynomial_centers == {"X": 7.0, "Z": 8.0}
+    assert uncentered.X[0, columns["X:Z"]] == 0.0
+    assert uncentered.X[0, columns["I(X ** 2)"]] == 0.0
+    assert uncentered.polynomial_centers == {}
+
+
+def test_pareto_height_allocates_a_readable_row_per_effect():
+    usage = pd.DataFrame(
+        {
+            "Effect": [f"Effect {i}" for i in range(60)],
+            "Percent Used": np.linspace(100.0, 0.0, 60),
+            "Parameters": np.ones(60, dtype=int),
+        }
+    )
+    figure = make_pareto_figure(usage)
+    assert figure.get_figheight() >= 23.0
 
 
 def test_screening_uses_existing_parallel_engine_and_writes_outputs(tmp_path):
@@ -88,3 +154,5 @@ def test_screening_uses_existing_parallel_engine_and_writes_outputs(tmp_path):
     assert metadata["objective"] == "wAIC"
     assert metadata["bootstrap_members_requested"] == 4
     assert metadata["svemnet_parallel_backend"] == "processes"
+    assert metadata["center_polynomials"] is True
+    assert set(metadata["polynomial_centers"]) == {"x1", "x2"}
