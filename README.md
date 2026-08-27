@@ -19,6 +19,7 @@ replicates.
 ```bash
 pip install svemnet            # core: numpy + scikit-learn
 pip install "svemnet[formula]" # + R-style formula interface (formulaic, pandas)
+pip install "svemnet[screening]" # + screening GUI, CLI, tables, and plots
 ```
 
 ## Quickstart (formula interface, closest to R / JMP)
@@ -93,6 +94,43 @@ interpreters. For nested workflows such as `GridSearchCV(n_jobs=-1)`, use
 startup can also outweigh computation for small ensembles, which is why
 parallel fitting is opt-in.
 
+## Standalone variable-screening application
+
+The optional screening application runs without JMP on Windows or macOS:
+
+```bash
+python -m pip install "svemnet[screening]"
+svem-screening
+```
+
+Choose a CSV file, one numeric response, and one or more factors. Text
+columns are treated as categorical automatically; numeric factors can also
+be marked categorical in the third selector. The candidate model is either
+main effects plus all two-way interactions or a response surface (the same
+terms plus squares of continuous factors). The objective is fixed at wAIC,
+the default is 100 bootstrap members, and all available CPUs are used.
+
+The results window contains a descending Pareto chart of whole-effect use,
+an effect-use table, and a parameter-nonzero table. The tables, chart, and
+run metadata can be saved together. Whole categorical contrast blocks enter
+forward-selection paths as a unit.
+
+The equivalent command-line run is:
+
+```bash
+svem-screening run experiment.csv \
+  --response Response \
+  --factors Temperature Pressure Catalyst \
+  --categorical Catalyst \
+  --model response-surface \
+  --bootstraps 100 \
+  --jobs -1 \
+  --output screening_results
+```
+
+`--jobs -1` uses the package's existing deterministic all-CPU bootstrap
+implementation. Set `--jobs 1` when process startup would outweigh the fit.
+
 ## Coming from R SVEMnet or JMP
 
 | R SVEMnet | svemnet (Python) |
@@ -121,7 +159,8 @@ ensemble predictions agree closely in practice.
 
 **Scope.** This package is intentionally minimal: Gaussian responses,
 lasso/elastic-net and forward-selection base learners, prediction with
-bootstrap uncertainty. For binomial responses, whole-model significance
+bootstrap uncertainty, and an optional focused variable-screening
+application. For binomial responses, whole-model significance
 testing, mixture-constrained random-search optimization, and
 Thompson-sampling batch design, use the
 [R package SVEMnet](https://CRAN.R-project.org/package=SVEMnet); JMP Pro
