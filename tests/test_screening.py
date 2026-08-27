@@ -5,10 +5,13 @@ import json
 
 import numpy as np
 import pandas as pd
+from matplotlib.colors import to_rgba
 
 from svemnet.screening import (
+    MODEL_EFFECT_COLOR,
     MODEL_INTERACTIONS,
     MODEL_RESPONSE_SURFACE,
+    NULL_EFFECT_COLOR,
     build_screening_design,
     make_pareto_figure,
     run_screening,
@@ -16,16 +19,18 @@ from svemnet.screening import (
 from svemnet.screening_app import build_parser
 
 
-def test_screening_defaults_are_200_members_centered_and_all_cpus():
+def test_screening_defaults_are_200_members_centered_no_nulls_and_all_cpus():
     signature = inspect.signature(run_screening)
     assert signature.parameters["n_boot"].default == 200
     assert signature.parameters["center_polynomials"].default is True
+    assert signature.parameters["n_null_vectors"].default == 0
     assert signature.parameters["n_jobs"].default == -1
     args = build_parser().parse_args(
         ["run", "data.csv", "--response", "y", "--factors", "x"]
     )
     assert args.bootstraps == 200
     assert args.center_polynomials is True
+    assert args.null_vectors == 0
     args = build_parser().parse_args(
         [
             "run",
@@ -35,9 +40,83 @@ def test_screening_defaults_are_200_members_centered_and_all_cpus():
             "--factors",
             "x",
             "--no-center-polynomials",
+            "--null-vectors",
+            "3",
         ]
     )
     assert args.center_polynomials is False
+    assert args.null_vectors == 3
+
+
+def test_null_vectors_are_reproducible_main_effects_only():
+    data = pd.DataFrame(
+        {
+            "Y": [1.0, 2.0, 4.0, 8.0, 15.0, 16.0],
+            "X": [0.0, 1.0, 4.0, 10.0, 20.0, 22.0],
+            "Z": [2.0, 3.0, 7.0, 11.0, 17.0, 19.0],
+        }
+    )
+    base = build_screening_design(
+        data,
+        response="Y",
+        factors=["X", "Z"],
+        model=MODEL_RESPONSE_SURFACE,
+    )
+    with_nulls = build_screening_design(
+        data,
+        response="Y",
+        factors=["X", "Z"],
+        model=MODEL_RESPONSE_SURFACE,
+        n_null_vectors=3,
+        null_seed=91,
+    )
+    repeated = build_screening_design(
+        data,
+        response="Y",
+        factors=["X", "Z"],
+        model=MODEL_RESPONSE_SURFACE,
+        n_null_vectors=3,
+        null_seed=91,
+    )
+    different_seed = build_screening_design(
+        data,
+        response="Y",
+        factors=["X", "Z"],
+        model=MODEL_RESPONSE_SURFACE,
+        n_null_vectors=3,
+        null_seed=92,
+    )
+
+    assert with_nulls.null_effects == ("Null 1", "Null 2", "Null 3")
+    assert with_nulls.feature_names[-3:] == with_nulls.null_effects
+    np.testing.assert_array_equal(
+        with_nulls.X[:, : base.X.shape[1]], base.X
+    )
+    np.testing.assert_array_equal(with_nulls.X, repeated.X)
+    assert not np.array_equal(with_nulls.X[:, -3:], different_seed.X[:, -3:])
+    first_null = base.X.shape[1]
+    assert with_nulls.groups["Null 1"] == (first_null,)
+    assert with_nulls.groups["Null 2"] == (first_null + 1,)
+    assert with_nulls.groups["Null 3"] == (first_null + 2,)
+    assert "Null" not in with_nulls.formula
+    assert all(
+        ":" not in name and "I(" not in name
+        for name in with_nulls.null_effects
+    )
+
+
+def test_null_vector_count_must_be_a_nonnegative_integer():
+    data = pd.DataFrame({"Y": [1.0, 2.0], "X": [0.0, 1.0]})
+    for value in (-1,):
+        with np.testing.assert_raises(ValueError):
+            build_screening_design(
+                data, response="Y", factors=["X"], n_null_vectors=value
+            )
+    for value in (True, 1.5):
+        with np.testing.assert_raises(TypeError):
+            build_screening_design(
+                data, response="Y", factors=["X"], n_null_vectors=value
+            )
 
 
 def test_design_expansion_handles_categorical_groups_and_response_surface():
@@ -113,6 +192,27 @@ def test_pareto_height_allocates_a_readable_row_per_effect():
     assert figure.get_figheight() >= 23.0
 
 
+def test_pareto_colors_null_effects_grey():
+    usage = pd.DataFrame(
+        {
+            "Effect": ["Temperature", "Null 1"],
+            "Percent Used": [60.0, 20.0],
+            "Parameters": [1, 1],
+        }
+    )
+    figure = make_pareto_figure(usage, null_effects=("Null 1",))
+    axis = figure.axes[0]
+    colors = {
+        tick.get_text(): patch.get_facecolor()
+        for tick, patch in zip(axis.get_yticklabels(), axis.patches)
+    }
+    np.testing.assert_allclose(colors["Null 1"], to_rgba(NULL_EFFECT_COLOR))
+    np.testing.assert_allclose(
+        colors["Temperature"], to_rgba(MODEL_EFFECT_COLOR)
+    )
+    assert axis.get_legend().get_texts()[0].get_text() == "Synthetic null effect"
+
+
 def test_screening_uses_existing_parallel_engine_and_writes_outputs(tmp_path):
     rng = np.random.default_rng(3)
     data = pd.DataFrame(
@@ -127,6 +227,7 @@ def test_screening_uses_existing_parallel_engine_and_writes_outputs(tmp_path):
         data,
         response="y",
         factors=["x1", "x2", "batch"],
+        n_null_vectors=2,
         n_boot=4,
         seed=4,
         n_jobs=2,
@@ -142,6 +243,8 @@ def test_screening_uses_existing_parallel_engine_and_writes_outputs(tmp_path):
         "Parameters",
     ]
     assert result.effect_usage["Percent Used"].between(0, 100).all()
+    assert set(result.design.null_effects) == {"Null 1", "Null 2"}
+    assert set(result.design.null_effects).issubset(result.effect_usage["Effect"])
     assert result.parameter_usage["Percent Nonzero"].between(0, 100).all()
     for name in (
         "effect_usage.csv",
@@ -156,3 +259,7 @@ def test_screening_uses_existing_parallel_engine_and_writes_outputs(tmp_path):
     assert metadata["svemnet_parallel_backend"] == "processes"
     assert metadata["center_polynomials"] is True
     assert set(metadata["polynomial_centers"]) == {"x1", "x2"}
+    assert metadata["null_vector_count"] == 2
+    assert metadata["null_effects"] == ["Null 1", "Null 2"]
+    assert metadata["null_vector_distribution"] == "independent standard normal"
+    assert metadata["null_vector_seed"] == 4

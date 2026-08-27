@@ -6,6 +6,7 @@ import json
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from numbers import Integral
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +26,9 @@ from .forward import fit_svem_forward
 MODEL_INTERACTIONS = "Main effects + two-way interactions"
 MODEL_RESPONSE_SURFACE = "Response surface"
 MODEL_CHOICES = (MODEL_INTERACTIONS, MODEL_RESPONSE_SURFACE)
+NULL_EFFECT_PREFIX = "Null"
+NULL_EFFECT_COLOR = "#8C8C8C"
+MODEL_EFFECT_COLOR = "#2878B5"
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,8 @@ class ScreeningDesign:
     continuous: tuple[str, ...]
     center_polynomials: bool
     polynomial_centers: dict[str, float]
+    null_effects: tuple[str, ...]
+    null_seed: int | None
     rows_dropped: int
 
 
@@ -61,6 +67,10 @@ class ScreeningResult:
             "continuous_factors": list(self.design.continuous),
             "center_polynomials": self.design.center_polynomials,
             "polynomial_centers": dict(self.design.polynomial_centers),
+            "null_vector_count": len(self.design.null_effects),
+            "null_effects": list(self.design.null_effects),
+            "null_vector_distribution": "independent standard normal",
+            "null_vector_seed": self.design.null_seed,
             "formula": self.design.formula,
             "rows_used": int(self.design.X.shape[0]),
             "rows_dropped": self.design.rows_dropped,
@@ -85,7 +95,9 @@ class ScreeningResult:
         (output / "run_metadata.json").write_text(
             json.dumps(self.metadata(), indent=2), encoding="utf-8"
         )
-        figure = make_pareto_figure(self.effect_usage)
+        figure = make_pareto_figure(
+            self.effect_usage, null_effects=self.design.null_effects
+        )
         figure.savefig(
             output / "effect_usage_pareto.png", dpi=180, bbox_inches="tight"
         )
@@ -103,13 +115,17 @@ def build_screening_design(
     categorical: Sequence[str] = (),
     model: str = MODEL_INTERACTIONS,
     center_polynomials: bool = True,
+    n_null_vectors: int = 0,
+    null_seed: int | None = 12345,
 ) -> ScreeningDesign:
     """Construct a formulaic design matrix with whole-effect groups.
 
     With ``center_polynomials=True``, uncoded continuous factors are centered
     at their complete-case arithmetic means inside interactions and powers,
     while their main-effect columns remain raw. This reproduces JMP Fit
-    Model's ``Center Polynomials(1)`` convention.
+    Model's ``Center Polynomials(1)`` convention. Synthetic null vectors are
+    appended afterward as independent standard-normal main effects, so they
+    never participate in interactions or powers.
     """
     factors = tuple(dict.fromkeys(factors))
     categorical_requested = tuple(dict.fromkeys(categorical))
@@ -133,6 +149,12 @@ def build_screening_design(
         raise ValueError(f"model must be one of {MODEL_CHOICES}")
     if not isinstance(center_polynomials, (bool, np.bool_)):
         raise TypeError("center_polynomials must be True or False")
+    if isinstance(n_null_vectors, (bool, np.bool_)) or not isinstance(
+        n_null_vectors, Integral
+    ):
+        raise TypeError("n_null_vectors must be a nonnegative integer")
+    if n_null_vectors < 0:
+        raise ValueError("n_null_vectors must be a nonnegative integer")
 
     selected = data.loc[:, [response, *factors]].copy()
     before = len(selected)
@@ -206,12 +228,34 @@ def build_screening_design(
                     f"could not identify the continuous main effect {name!r}"
                 )
             X[:, main_columns] = X_raw[:, main_columns]
+    design_groups = dict(groups)
+    null_effects: list[str] = []
+    if n_null_vectors:
+        rng = np.random.default_rng(null_seed)
+        null_matrix = rng.standard_normal((X.shape[0], n_null_vectors))
+        used_names = set(feature_names) | set(design_groups)
+        for index in range(1, n_null_vectors + 1):
+            name = f"{NULL_EFFECT_PREFIX} {index}"
+            if name in used_names:
+                name = f"{name} [synthetic]"
+            suffix = 2
+            while name in used_names:
+                name = f"{NULL_EFFECT_PREFIX} {index} [synthetic {suffix}]"
+                suffix += 1
+            used_names.add(name)
+            null_effects.append(name)
+        first_null_column = X.shape[1]
+        X = np.column_stack((X, null_matrix))
+        feature_names = (*feature_names, *null_effects)
+        for offset, name in enumerate(null_effects):
+            design_groups[name] = (first_null_column + offset,)
+
     return ScreeningDesign(
         data=selected,
         y=y,
         X=X,
         feature_names=feature_names,
-        groups=dict(groups),
+        groups=design_groups,
         formula=formula,
         response=response,
         factors=factors,
@@ -219,6 +263,8 @@ def build_screening_design(
         continuous=continuous,
         center_polynomials=bool(center_polynomials),
         polynomial_centers=polynomial_centers,
+        null_effects=tuple(null_effects),
+        null_seed=null_seed if n_null_vectors else None,
         rows_dropped=before - len(selected),
     )
 
@@ -231,12 +277,18 @@ def run_screening(
     categorical: Sequence[str] = (),
     model: str = MODEL_INTERACTIONS,
     center_polynomials: bool = True,
+    n_null_vectors: int = 0,
     n_boot: int = 200,
     seed: int | None = 12345,
     n_jobs: int | None = -1,
     progress: Callable[[int, int], None] | None = None,
 ) -> ScreeningResult:
-    """Run fixed-wAIC forward SVEM screening, using all CPUs by default."""
+    """Run fixed-wAIC forward SVEM screening, using all CPUs by default.
+
+    ``n_null_vectors`` adds reproducible standard-normal main effects using
+    the analysis seed. They provide a noise-selection benchmark without
+    changing the requested candidate-model expansion.
+    """
     design = build_screening_design(
         data,
         response=response,
@@ -244,6 +296,8 @@ def run_screening(
         categorical=categorical,
         model=model,
         center_polynomials=center_polynomials,
+        n_null_vectors=n_null_vectors,
+        null_seed=seed,
     )
     if progress is not None:
         progress(0, n_boot)
@@ -302,7 +356,11 @@ def run_screening(
     )
 
 
-def make_pareto_figure(effect_usage: pd.DataFrame):
+def make_pareto_figure(
+    effect_usage: pd.DataFrame,
+    *,
+    null_effects: Sequence[str] = (),
+):
     """Return a descending, top-to-bottom effect-use Pareto figure."""
     from matplotlib.figure import Figure
 
@@ -312,7 +370,12 @@ def make_pareto_figure(effect_usage: pd.DataFrame):
     height = max(4.8, min(80.0, 0.36 * len(table) + 1.8))
     figure = Figure(figsize=(10.0, height), constrained_layout=True)
     axis = figure.add_subplot(111)
-    axis.barh(table["Effect"], table["Percent Used"], color="#2878B5")
+    null_effect_set = set(null_effects)
+    colors = [
+        NULL_EFFECT_COLOR if effect in null_effect_set else MODEL_EFFECT_COLOR
+        for effect in table["Effect"]
+    ]
+    axis.barh(table["Effect"], table["Percent Used"], color=colors)
     axis.set_xlim(0, 100)
     axis.set_xlabel("Percent of SVEM bootstrap models")
     axis.set_ylabel("")
@@ -320,6 +383,18 @@ def make_pareto_figure(effect_usage: pd.DataFrame):
     axis.grid(axis="x", alpha=0.25)
     axis.tick_params(axis="y", labelsize=9)
     axis.margins(y=0.01)
+    if null_effect_set:
+        from matplotlib.patches import Patch
+
+        axis.legend(
+            handles=[
+                Patch(
+                    facecolor=NULL_EFFECT_COLOR,
+                    label="Synthetic null effect",
+                )
+            ],
+            loc="lower right",
+        )
     for patch, value in zip(axis.patches, table["Percent Used"]):
         numeric_value = float(value)
         inside = numeric_value >= 94.0
@@ -337,8 +412,10 @@ def make_pareto_figure(effect_usage: pd.DataFrame):
 
 __all__ = [
     "MODEL_CHOICES",
+    "MODEL_EFFECT_COLOR",
     "MODEL_INTERACTIONS",
     "MODEL_RESPONSE_SURFACE",
+    "NULL_EFFECT_COLOR",
     "ScreeningDesign",
     "ScreeningResult",
     "build_screening_design",
