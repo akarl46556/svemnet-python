@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from svemnet.base_model import run_base_model
 from svemnet.prediction import CSVSnapshot
 from svemnet.screening import MODEL_RESPONSE_SURFACE, run_screening
 from svemnet.screening_app import build_parser
@@ -124,3 +125,38 @@ def test_gui_cli_defaults_and_no_write_opt_in():
         assert not parsed.save_predictions
         assert parsed.method == "lasso"
         assert parsed.null_vectors == 0
+
+
+@pytest.mark.parametrize("base_model", [False, True])
+@pytest.mark.parametrize("center", [False, True])
+def test_numeric_categorical_prediction_export(tmp_path, base_model, center):
+    frame = sample()
+    frame["Group"] = frame["Group"].map({"a": 1, "b": 2})
+    path = tmp_path / "numeric_categories.csv"
+    frame.to_csv(path, index=False)
+    snapshot = CSVSnapshot.load(path)
+    runner = run_base_model if base_model else run_screening
+    fit_options = {"nfolds": 3, "repeats": 1} if base_model else {"n_boot": 3}
+    result = runner(
+        snapshot.data,
+        response="Y",
+        factors=["A", "B", "Group"],
+        categorical=["Group"],
+        model=MODEL_RESPONSE_SURFACE,
+        center_polynomials=center,
+        n_jobs=1,
+        **fit_options,
+    )
+    values = result.predict_source()
+    np.testing.assert_allclose(
+        values[list(result.design.training_rows)],
+        result.fit.predictions,
+        atol=1e-12,
+    )
+    assert np.isfinite(values[3]) and np.isnan(values[7])
+    saved = result.save_predictions_csv(snapshot)
+    np.testing.assert_allclose(pd.read_csv(path)[saved["column"]], values)
+    new = snapshot.data.copy()
+    new.loc[0, "Group"] = 3
+    with pytest.raises(ValueError, match="not seen"):
+        result.predict(new)

@@ -74,6 +74,10 @@ class ScreeningDesign:
         selected = data.loc[:, list(required)].copy()
         for name in (*self.continuous, *self.null_effects):
             selected[name] = pd.to_numeric(selected[name], errors="raise")
+        for name in self.categorical:
+            # CSV reloads numeric-coded categories as numeric. Preserve the
+            # fitted factor role; the frozen ModelSpec still controls levels.
+            selected[name] = selected[name].astype("category")
         rows = np.flatnonzero(selected.notna().all(axis=1).to_numpy())
         selected = selected.iloc[rows].reset_index(drop=True)
         if len(rows) == 0:
