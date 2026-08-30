@@ -96,6 +96,18 @@ harness green (bootstrap-by-bootstrap parity of the fit itself is
 unaffected because the PI scalars are computed from quantities already in
 the loop, with no new RNG draws).
 
+Scope expansion (Andrew, 2026-08-30): lasso is the default across the public
+interfaces and screening GUI, with explicit elastic-net alpha-grid search.
+Add a separate Gaussian single-model repeated-CV lasso/elastic-net API and
+GUI, standardized-coefficient reports, and opt-in recoverable CSV prediction
+write-back. Predictor scaling is learned within CV training folds; do not
+claim bitwise glmnet parity or unbiased test error from tuning CV scores.
+No relaxed-lasso implementation is authorized; document scikit-learn (not a
+Python glmnet binding) and direct users to R SVEMnet for relaxation. Preserve
+the frozen training design schema for predictions, explicit null inputs,
+source-row positions, exact-byte backups, changed-source checks, and atomic
+CSV replacement. Core hard dependencies remain unchanged.
+
 ## Working on this repo
 
 - Dev interpreter: `.venv/Scripts/python` (Windows venv with the package

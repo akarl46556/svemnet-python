@@ -1,4 +1,4 @@
-"""DataFrame/CSV variable-screening workflow for SVEM forward selection."""
+"""DataFrame/CSV variable-screening workflow for Gaussian SVEM models."""
 
 from __future__ import annotations
 
@@ -19,9 +19,11 @@ except ImportError as exc:  # pragma: no cover
         "Install them with: pip install 'svemnet[screening]'"
     ) from exc
 
+from .core import fit_svem
 from .expansion import response_surface_formula
-from .formula import _design_from_formula
+from .formula import SVEMFormulaModel, _design_from_formula
 from .forward import fit_svem_forward
+from .prediction import PredictionMixin
 
 MODEL_INTERACTIONS = "Main effects + two-way interactions"
 MODEL_RESPONSE_SURFACE = "Response surface"
@@ -29,6 +31,10 @@ MODEL_CHOICES = (MODEL_INTERACTIONS, MODEL_RESPONSE_SURFACE)
 NULL_EFFECT_PREFIX = "Null"
 NULL_EFFECT_COLOR = "#8C8C8C"
 MODEL_EFFECT_COLOR = "#2878B5"
+METHOD_LASSO = "SVEM lasso"
+METHOD_ELASTIC_NET = "SVEM elastic net search (0.5, 1)"
+METHOD_FORWARD = "SVEM forward selection"
+METHOD_CHOICES = (METHOD_LASSO, METHOD_ELASTIC_NET, METHOD_FORWARD)
 
 
 @dataclass(frozen=True)
@@ -48,20 +54,78 @@ class ScreeningDesign:
     null_effects: tuple[str, ...]
     null_seed: int | None
     rows_dropped: int
+    source_data: pd.DataFrame
+    training_rows: tuple[int, ...]
+    model_spec: object
+    centered_spec: object
+    null_values: np.ndarray
+
+    def transform(self, data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        """Reapply training schema; return complete-row matrix and row positions.
+
+        Missing predictor rows are omitted explicitly, never shifted silently.
+        Unseen categorical levels are errors. Synthetic null predictors must
+        be supplied explicitly for new data, not randomly regenerated.
+        """
+        required = (*self.factors, *self.null_effects)
+        missing = [name for name in required if name not in data.columns]
+        if missing:
+            raise ValueError(f"prediction columns were not found: {missing}")
+        selected = data.loc[:, list(required)].copy()
+        for name in (*self.continuous, *self.null_effects):
+            selected[name] = pd.to_numeric(selected[name], errors="raise")
+        rows = np.flatnonzero(selected.notna().all(axis=1).to_numpy())
+        selected = selected.iloc[rows].reset_index(drop=True)
+        if len(rows) == 0:
+            return np.empty((0, len(self.feature_names))), rows
+        names = self.feature_names[: len(self.feature_names) - len(self.null_effects)]
+        raw_model = SVEMFormulaModel(
+            None, self.model_spec, names, self.formula, self.groups
+        )
+        X = raw_model._design(selected)
+        if self.center_polynomials:
+            centered = selected.copy()
+            for name, center in self.polynomial_centers.items():
+                centered[name] = centered[name] - center
+            centered_model = SVEMFormulaModel(
+                None, self.centered_spec, names, self.formula, self.groups
+            )
+            centered_X = centered_model._design(centered)
+            for name in self.continuous:
+                centered_X[:, self.groups[name]] = X[:, self.groups[name]]
+            X = centered_X
+        if self.null_effects:
+            X = np.column_stack(
+                (X, selected.loc[:, list(self.null_effects)].to_numpy(float))
+            )
+        if not np.isfinite(X).all():
+            raise ValueError("prediction factors must be finite")
+        return X, rows
 
 
 @dataclass(frozen=True)
-class ScreeningResult:
+class ScreeningResult(PredictionMixin):
     design: ScreeningDesign
     fit: object
     effect_usage: pd.DataFrame
     parameter_usage: pd.DataFrame
     elapsed_seconds: float
     workers: int
+    method: str
+    alphas: tuple[float, ...]
 
     def metadata(self) -> dict[str, object]:
         return {
             "response": self.design.response,
+            "intercept": float(self.fit.coefficients[0]),
+            "method": self.method,
+            "alpha_candidates": list(self.alphas),
+            "relaxed": False,
+            "effect_usage_definition": (
+                "selected whole effect"
+                if self.method == "forward"
+                else "any nonzero contrast coefficient in the effect"
+            ),
             "factors": list(self.design.factors),
             "categorical_factors": list(self.design.categorical),
             "continuous_factors": list(self.design.continuous),
@@ -98,9 +162,7 @@ class ScreeningResult:
         figure = make_pareto_figure(
             self.effect_usage, null_effects=self.design.null_effects
         )
-        figure.savefig(
-            output / "effect_usage_pareto.png", dpi=180, bbox_inches="tight"
-        )
+        figure.savefig(output / "effect_usage_pareto.png", dpi=180, bbox_inches="tight")
         from matplotlib import pyplot as plt
 
         plt.close(figure)
@@ -158,15 +220,14 @@ def build_screening_design(
 
     selected = data.loc[:, [response, *factors]].copy()
     before = len(selected)
-    selected = selected.dropna(axis=0, how="any").reset_index(drop=True)
+    training_rows = np.flatnonzero(selected.notna().all(axis=1).to_numpy())
+    selected = selected.iloc[training_rows].reset_index(drop=True)
     if selected.empty:
         raise ValueError("no complete rows remain after dropping missing values")
     selected[response] = pd.to_numeric(selected[response], errors="raise")
 
     auto_categorical = [
-        name
-        for name in factors
-        if not pd.api.types.is_numeric_dtype(selected[name])
+        name for name in factors if not pd.api.types.is_numeric_dtype(selected[name])
     ]
     categorical_set = set(categorical_requested) | set(auto_categorical)
     nominal = tuple(name for name in factors if name in categorical_set)
@@ -195,13 +256,14 @@ def build_screening_design(
         interaction_order=2,
         polynomial_order=polynomial_order,
     )
-    y, X_raw, feature_names, groups, _ = _design_from_formula(formula, selected)
+    y, X_raw, feature_names, groups, model_spec = _design_from_formula(
+        formula, selected
+    )
+    centered_spec = None
     polynomial_centers: dict[str, float] = {}
     X = X_raw
     if center_polynomials:
-        polynomial_centers = {
-            name: float(selected[name].mean()) for name in continuous
-        }
+        polynomial_centers = {name: float(selected[name].mean()) for name in continuous}
         centered = selected.copy()
         for name, center in polynomial_centers.items():
             centered[name] = centered[name] - center
@@ -210,7 +272,7 @@ def build_screening_design(
             centered_X,
             centered_names,
             centered_groups,
-            _,
+            centered_spec,
         ) = _design_from_formula(formula, centered)
         if centered_names != feature_names or centered_groups != groups:
             raise RuntimeError(
@@ -230,10 +292,12 @@ def build_screening_design(
             X[:, main_columns] = X_raw[:, main_columns]
     design_groups = dict(groups)
     null_effects: list[str] = []
+    null_values = np.empty((before, 0))
     if n_null_vectors:
         rng = np.random.default_rng(null_seed)
-        null_matrix = rng.standard_normal((X.shape[0], n_null_vectors))
-        used_names = set(feature_names) | set(design_groups)
+        null_values = rng.standard_normal((before, n_null_vectors))
+        null_matrix = null_values[training_rows]
+        used_names = set(feature_names) | set(design_groups) | set(data.columns)
         for index in range(1, n_null_vectors + 1):
             name = f"{NULL_EFFECT_PREFIX} {index}"
             if name in used_names:
@@ -266,6 +330,11 @@ def build_screening_design(
         null_effects=tuple(null_effects),
         null_seed=null_seed if n_null_vectors else None,
         rows_dropped=before - len(selected),
+        source_data=data.copy(deep=True),
+        training_rows=tuple(int(i) for i in training_rows),
+        model_spec=model_spec,
+        centered_spec=centered_spec,
+        null_values=null_values,
     )
 
 
@@ -278,17 +347,23 @@ def run_screening(
     model: str = MODEL_INTERACTIONS,
     center_polynomials: bool = True,
     n_null_vectors: int = 0,
+    method: str = "lasso",
+    alphas: Sequence[float] = (1.0,),
     n_boot: int = 200,
     seed: int | None = 12345,
     n_jobs: int | None = -1,
     progress: Callable[[int, int], None] | None = None,
 ) -> ScreeningResult:
-    """Run fixed-wAIC forward SVEM screening, using all CPUs by default.
+    """Run fixed-wAIC SVEM screening, defaulting to lasso and all CPUs.
 
     ``n_null_vectors`` adds reproducible standard-normal main effects using
     the analysis seed. They provide a noise-selection benchmark without
     changing the requested candidate-model expansion.
     """
+    if method not in ("lasso", "elastic_net", "forward"):
+        raise ValueError("method must be 'lasso', 'elastic_net', or 'forward'")
+    if method == "lasso" and tuple(np.atleast_1d(alphas)) != (1.0,):
+        raise ValueError("use method='elastic_net' to search mixing alphas")
     design = build_screening_design(
         data,
         response=response,
@@ -302,22 +377,27 @@ def run_screening(
     if progress is not None:
         progress(0, n_boot)
     started = time.perf_counter()
-    fit = fit_svem_forward(
-        design.X,
-        design.y,
-        nBoot=n_boot,
-        objective="wAIC",
-        seed=seed,
-        groups=design.groups,
-        feature_names=design.feature_names,
-        n_jobs=n_jobs,
-    )
+    fit_options = {
+        "nBoot": n_boot,
+        "objective": "wAIC",
+        "seed": seed,
+        "feature_names": design.feature_names,
+        "n_jobs": n_jobs,
+    }
+    if method == "forward":
+        fit = fit_svem_forward(design.X, design.y, groups=design.groups, **fit_options)
+        frequencies = fit.selection_frequencies
+    else:
+        fit = fit_svem(design.X, design.y, alpha=alphas, **fit_options)
+        nonzero = np.abs(fit.coef_matrix[:, 1:]) > 1e-8
+        frequencies = {
+            name: np.any(nonzero[:, columns], axis=1).mean()
+            for name, columns in design.groups.items()
+        }
     elapsed = time.perf_counter() - started
     if progress is not None:
         progress(fit.nBoot_used, n_boot)
-    worker_count = int(
-        fit.diagnostics["reproducibility"]["n_jobs_effective"]
-    )
+    worker_count = int(fit.diagnostics["reproducibility"]["n_jobs_effective"])
 
     effect_usage = pd.DataFrame(
         [
@@ -326,15 +406,13 @@ def run_screening(
                 "Percent Used": 100.0 * float(frequency),
                 "Parameters": len(design.groups[name]),
             }
-            for name, frequency in fit.selection_frequencies.items()
+            for name, frequency in frequencies.items()
         ]
     ).sort_values(
         ["Percent Used", "Effect"], ascending=[False, True], ignore_index=True
     )
 
-    parameter_percent = 100.0 * (
-        np.abs(fit.coef_matrix[:, 1:]) > 1.0e-8
-    ).mean(axis=0)
+    parameter_percent = 100.0 * (np.abs(fit.coef_matrix[:, 1:]) > 1.0e-8).mean(axis=0)
     parameter_usage = pd.DataFrame(
         {
             "Parameter": design.feature_names,
@@ -353,6 +431,10 @@ def run_screening(
         parameter_usage=parameter_usage,
         elapsed_seconds=elapsed,
         workers=worker_count,
+        method=method,
+        alphas=tuple(float(a) for a in np.atleast_1d(alphas))
+        if method != "forward"
+        else (),
     )
 
 

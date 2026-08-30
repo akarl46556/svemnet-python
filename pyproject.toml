@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "svemnet"
-version = "0.5.0"
+version = "0.6.0"
 description = "Self-Validated Ensemble Models (SVEM) for small-sample design-of-experiments regression: SVEM lasso / elastic net and SVEM forward selection with validation-weighted information criteria."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -61,6 +61,7 @@ test = [
 
 [project.scripts]
 svem-screening = "svemnet.screening_app:main"
+svem-lasso = "svemnet.lasso_app:main"
 
 [project.urls]
 Homepage = "https://github.com/akarl46556/svemnet-python"

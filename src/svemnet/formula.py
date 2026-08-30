@@ -211,7 +211,7 @@ def svem(
     nBoot: int = 100,
     objective: str = "wAIC",
     weight_scheme: str = "SVEM",
-    alphas: Sequence[float] = (0.5, 1.0),
+    alphas: Sequence[float] = (1.0,),
     debias: bool = False,
     seed: int | None = None,
     n_jobs: int | None = 1,
@@ -310,9 +310,42 @@ def forward_aicc(
     return ForwardAICcModel(result, spec, names, formula, groups)
 
 
+class CVLassoFormulaModel(SVEMFormulaModel):
+    """Single cross-validated penalized model with frozen formula encoding."""
+
+    def predict(self, data):
+        return self.result_.predict(self._design(data))
+
+    def coef_table(self):
+        coefficients = self.result_.coefficients
+        return pd.DataFrame({
+            "coefficient": coefficients,
+            "retained": coefficients != 0.0,
+        }, index=["Intercept", *self.feature_names_])
+
+
+def lasso_cv(formula, data, *, alphas=(1.0,), nfolds=10, repeats=5,
+             choose_rule="min", seed=12345, n_jobs=1):
+    """Non-relaxed Gaussian CV companion to R's ``glmnet_with_cv``.
+
+    Uses scikit-learn, not glmnet; identical CV paths or selected models across
+    solvers are not promised. The default is lasso; ``alphas=(0.5, 1)`` adds
+    elastic-net search. Prediction returns point estimates only.
+    """
+    from .lasso import fit_lasso_cv
+
+    y, X, names, groups, spec = _design_from_formula(formula, data)
+    result = fit_lasso_cv(X, y, alphas=alphas, nfolds=nfolds, repeats=repeats,
+                         choose_rule=choose_rule, seed=seed, n_jobs=n_jobs,
+                         feature_names=names)
+    return CVLassoFormulaModel(result, spec, names, formula, groups)
+
+
 __all__ = [
+    "CVLassoFormulaModel",
     "SVEMFormulaModel",
     "ForwardAICcModel",
     "svem",
     "forward_aicc",
+    "lasso_cv",
 ]

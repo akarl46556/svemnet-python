@@ -28,7 +28,7 @@ def _load_screening_api():
 class ScreeningApp:
     """Small cross-platform Tk interface around :func:`run_screening`."""
 
-    def __init__(self, root):
+    def __init__(self, root, *, base_model=False):
         import tkinter as tk
         from tkinter import ttk
 
@@ -37,20 +37,22 @@ class ScreeningApp:
         self.ttk = ttk
         self.screening = screening
         self.root = root
+        self.base_model = base_model
         self.data = None
+        self.source_snapshot = None
         self.events: queue.Queue = queue.Queue()
 
-        root.title("SVEM Variable Screening")
-        root.minsize(1040, 680)
+        root.title(
+            "Base Lasso / Elastic Net" if base_model else "SVEM Variable Screening"
+        )
+        root.minsize(1080, 760)
         root.columnconfigure(0, weight=1)
         root.rowconfigure(1, weight=1)
 
         file_frame = ttk.Frame(root, padding=10)
         file_frame.grid(row=0, column=0, sticky="ew")
         file_frame.columnconfigure(1, weight=1)
-        ttk.Label(file_frame, text="CSV data file:").grid(
-            row=0, column=0, padx=(0, 8)
-        )
+        ttk.Label(file_frame, text="CSV data file:").grid(row=0, column=0, padx=(0, 8))
         self.file_var = tk.StringVar()
         ttk.Entry(file_frame, textvariable=self.file_var).grid(
             row=0, column=1, sticky="ew"
@@ -65,9 +67,7 @@ class ScreeningApp:
             body.columnconfigure(col, weight=1)
         body.rowconfigure(1, weight=1)
 
-        ttk.Label(body, text="Response (select one)").grid(
-            row=0, column=0, sticky="w"
-        )
+        ttk.Label(body, text="Response (select one)").grid(row=0, column=0, sticky="w")
         ttk.Label(body, text="Factors (select one or more)").grid(
             row=0, column=1, sticky="w"
         )
@@ -88,15 +88,11 @@ class ScreeningApp:
         self.categorical_list.grid(row=1, column=2, sticky="nsew")
 
         options = ttk.LabelFrame(body, text="Options", padding=10)
-        options.grid(
-            row=2, column=0, columnspan=3, sticky="ew", pady=(12, 0)
-        )
+        options.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(12, 0))
         for col in (1, 3, 5):
             options.columnconfigure(col, weight=1)
 
-        ttk.Label(options, text="Candidate model:").grid(
-            row=0, column=0, sticky="w"
-        )
+        ttk.Label(options, text="Candidate model:").grid(row=0, column=0, sticky="w")
         self.model_var = tk.StringVar(value=screening.MODEL_INTERACTIONS)
         ttk.Combobox(
             options,
@@ -104,19 +100,17 @@ class ScreeningApp:
             values=screening.MODEL_CHOICES,
             state="readonly",
             width=37,
-        ).grid(
-            row=0, column=1, columnspan=2, sticky="ew", padx=(6, 20)
-        )
+        ).grid(row=0, column=1, columnspan=2, sticky="ew", padx=(6, 20))
         self.center_polynomials_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             options,
             text="Center polynomials",
             variable=self.center_polynomials_var,
         ).grid(row=0, column=3, columnspan=3, sticky="w")
-        ttk.Label(options, text="Bootstraps:").grid(
+        ttk.Label(options, text="CV folds:" if base_model else "Bootstraps:").grid(
             row=1, column=0, sticky="w", pady=(10, 0)
         )
-        self.boot_var = tk.StringVar(value="200")
+        self.boot_var = tk.StringVar(value="10" if base_model else "200")
         ttk.Spinbox(
             options,
             from_=1,
@@ -135,9 +129,7 @@ class ScreeningApp:
             textvariable=self.null_vectors_var,
             width=9,
         ).grid(row=1, column=3, sticky="w", padx=(6, 20), pady=(10, 0))
-        ttk.Label(options, text="Seed:").grid(
-            row=1, column=4, sticky="w", pady=(10, 0)
-        )
+        ttk.Label(options, text="Seed:").grid(row=1, column=4, sticky="w", pady=(10, 0))
         self.seed_var = tk.StringVar(value="12345")
         ttk.Entry(options, textvariable=self.seed_var, width=12).grid(
             row=1, column=5, sticky="w", padx=(6, 0), pady=(10, 0)
@@ -158,9 +150,54 @@ class ScreeningApp:
             text=(
                 f"-1 = all available CPUs ({os.cpu_count() or 1} logical on "
                 "this computer). Null vectors are independent standard-normal "
-                "main effects; objective is always wAIC."
+                "main effects."
             ),
         ).grid(row=2, column=2, columnspan=4, sticky="w", pady=(10, 0))
+        ttk.Label(options, text="Fitting method:").grid(
+            row=3, column=0, sticky="w", pady=(10, 0)
+        )
+        choices = (
+            ("Lasso", "Elastic net search (0.5, 1)")
+            if base_model
+            else screening.METHOD_CHOICES
+        )
+        self.method_var = tk.StringVar(value=choices[0])
+        ttk.Combobox(
+            options,
+            textvariable=self.method_var,
+            values=choices,
+            state="readonly",
+            width=35,
+        ).grid(row=3, column=1, columnspan=3, sticky="ew", padx=(6, 20), pady=(10, 0))
+        self.repeats_var = tk.StringVar(value="5")
+        self.rule_var = tk.StringVar(value="min")
+        if base_model:
+            ttk.Label(options, text="CV repeats:").grid(
+                row=4, column=0, sticky="w", pady=(10, 0)
+            )
+            ttk.Spinbox(
+                options, from_=1, to=100, textvariable=self.repeats_var, width=9
+            ).grid(row=4, column=1, sticky="w", padx=6, pady=(10, 0))
+            ttk.Label(options, text="CV rule:").grid(
+                row=4, column=2, sticky="w", pady=(10, 0)
+            )
+            ttk.Combobox(
+                options,
+                textvariable=self.rule_var,
+                values=("min", "1se"),
+                state="readonly",
+                width=9,
+            ).grid(row=4, column=3, sticky="w", padx=6, pady=(10, 0))
+        else:
+            ttk.Label(options, text="SVEM selection objective: wAIC").grid(
+                row=4, column=0, columnspan=6, sticky="w", pady=(10, 0)
+            )
+        self.save_predictions_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            options,
+            text="Save predictions back to source CSV (backup created)",
+            variable=self.save_predictions_var,
+        ).grid(row=5, column=0, columnspan=6, sticky="w", pady=(10, 0))
 
         footer = ttk.Frame(root, padding=10)
         footer.grid(row=2, column=0, sticky="ew")
@@ -172,7 +209,9 @@ class ScreeningApp:
         self.progress = ttk.Progressbar(footer, mode="indeterminate")
         self.progress.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.run_button = ttk.Button(
-            footer, text="Run screening", command=self._run
+            footer,
+            text="Fit base model" if base_model else "Run screening",
+            command=self._run,
         )
         self.run_button.grid(
             row=0, column=1, rowspan=2, padx=(12, 0), ipadx=12, ipady=6
@@ -190,13 +229,17 @@ class ScreeningApp:
             return
         try:
             pd, _ = _load_screening_api()
-            data = pd.read_csv(path)
+            from .prediction import CSVSnapshot
+
+            snapshot = CSVSnapshot.load(path)
+            data = snapshot.data
             if data.shape[1] < 2:
                 raise ValueError("the CSV must contain at least two columns")
         except Exception as exc:  # noqa: BLE001 - GUI must report parser errors
             messagebox.showerror("Could not open CSV", str(exc))
             return
         self.data = data
+        self.source_snapshot = snapshot
         self.file_var.set(path)
         columns = [str(name) for name in data.columns]
         for widget in (
@@ -208,14 +251,14 @@ class ScreeningApp:
             for name in columns:
                 widget.insert("end", name)
         self.response_list.selection_set(0)
-        if len(columns) > 1:
-            self.factor_list.selection_set(1, "end")
+        for i, name in enumerate(columns[1:], start=1):
+            # Avoid silently feeding exported fitted values back into the model.
+            if not name.startswith("Predicted "):
+                self.factor_list.selection_set(i)
         for i, name in enumerate(columns):
             if not pd.api.types.is_numeric_dtype(data[name]):
                 self.categorical_list.selection_set(i)
-        self.status_var.set(
-            f"Loaded {len(data):,} rows and {len(columns)} columns."
-        )
+        self.status_var.set(f"Loaded {len(data):,} rows and {len(columns)} columns.")
 
     @staticmethod
     def _selected(widget):
@@ -230,9 +273,7 @@ class ScreeningApp:
         responses = self._selected(self.response_list)
         factors = self._selected(self.factor_list)
         categorical = [
-            name
-            for name in self._selected(self.categorical_list)
-            if name in factors
+            name for name in self._selected(self.categorical_list) if name in factors
         ]
         try:
             if len(responses) != 1:
@@ -243,10 +284,15 @@ class ScreeningApp:
             n_null_vectors = int(self.null_vectors_var.get())
             seed = int(self.seed_var.get())
             n_jobs = int(self.jobs_var.get())
+            repeats = int(self.repeats_var.get())
             if n_boot < 1 or n_null_vectors < 0 or n_jobs == 0:
                 raise ValueError(
                     "bootstraps must be positive; null vectors must be "
                     "nonnegative; workers must be -1 or a nonzero integer"
+                )
+            if self.base_model and (n_boot < 2 or repeats < 1):
+                raise ValueError(
+                    "CV folds must be at least two; repeats must be positive"
                 )
         except ValueError as exc:
             messagebox.showerror("Invalid selection", str(exc))
@@ -259,22 +305,57 @@ class ScreeningApp:
             "model": self.model_var.get(),
             "center_polynomials": self.center_polynomials_var.get(),
             "n_null_vectors": n_null_vectors,
-            "n_boot": n_boot,
             "seed": seed,
             "n_jobs": n_jobs,
         }
+        method = self.method_var.get()
+        alphas = (0.5, 1.0) if "search" in method else (1.0,)
+        if self.base_model:
+            from .base_model import run_base_model
+
+            runner = run_base_model
+            kwargs.update(
+                alphas=alphas,
+                nfolds=n_boot,
+                repeats=repeats,
+                choose_rule=self.rule_var.get(),
+            )
+        else:
+            runner = self.screening.run_screening
+            method_key = (
+                "forward"
+                if method == self.screening.METHOD_FORWARD
+                else "elastic_net"
+                if "search" in method
+                else "lasso"
+            )
+            kwargs.update(method=method_key, alphas=alphas, n_boot=n_boot)
+        analysis_data = self.data.copy(deep=True)
+        snapshot = self.source_snapshot
+        save_predictions = self.save_predictions_var.get()
         self.run_button.configure(state="disabled")
         self.progress.start(12)
         self.status_var.set(
-            f"Fitting {n_boot} SVEM bootstrap members with forward selection…"
+            "Fitting cross-validated base model…"
+            if self.base_model
+            else f"Fitting {n_boot} SVEM bootstrap members: {method}…"
         )
 
         def task():
             try:
-                result = self.screening.run_screening(self.data, **kwargs)
-                self.events.put(("done", result))
+                result = runner(analysis_data, **kwargs)
             except Exception as exc:  # noqa: BLE001 - return worker errors to Tk
                 self.events.put(("error", exc))
+                return
+            saved, export_error = None, None
+            if save_predictions:
+                try:
+                    if snapshot is None:
+                        raise ValueError("load a CSV file before saving predictions")
+                    saved = result.save_predictions_csv(snapshot)
+                except Exception as exc:  # noqa: BLE001 - fit remains usable
+                    export_error = str(exc)
+            self.events.put(("done", result, saved, export_error))
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -288,17 +369,46 @@ class ScreeningApp:
                     result = event[1]
                     self.run_button.configure(state="normal")
                     self.progress.stop()
+                    description = (
+                        "Finished base model"
+                        if self.base_model
+                        else f"Finished {result.fit.nBoot_used} members"
+                    )
                     self.status_var.set(
-                        f"Finished {result.fit.nBoot_used} members using "
+                        f"{description} using "
                         f"{result.workers} workers in "
                         f"{result.elapsed_seconds:.1f} seconds."
                     )
                     self._show_results(result)
+                    if event[2]:
+                        saved = event[2]
+                        messagebox.showinfo(
+                            "Predictions saved",
+                            f"Added {saved['column']}\n"
+                            f"To: {saved['path']}\nBackup: {saved['backup']}",
+                        )
+                        if Path(self.file_var.get()).absolute() == Path(saved["path"]):
+                            from .prediction import CSVSnapshot
+
+                            try:
+                                self.source_snapshot = CSVSnapshot.load(saved["path"])
+                                self.data = self.source_snapshot.data
+                            except (OSError, ValueError) as exc:
+                                messagebox.showwarning("Reload source CSV", str(exc))
+                    if event[3]:
+                        messagebox.showwarning(
+                            "Model fitted; CSV not changed", event[3]
+                        )
                 elif event[0] == "error":
                     self.run_button.configure(state="normal")
                     self.progress.stop()
-                    self.status_var.set("Screening failed.")
-                    messagebox.showerror("SVEM screening failed", str(event[1]))
+                    title = (
+                        "Base model failed"
+                        if self.base_model
+                        else "SVEM screening failed"
+                    )
+                    self.status_var.set(title)
+                    messagebox.showerror(title, str(event[1]))
         except queue.Empty:
             pass
         self.root.after(100, self._poll_events)
@@ -309,7 +419,11 @@ class ScreeningApp:
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
         window = self.tk.Toplevel(self.root)
-        window.title("SVEM Variable Screening Results")
+        window.title(
+            "Base Model Results"
+            if self.base_model
+            else "SVEM Variable Screening Results"
+        )
         window.geometry("1150x800")
         window.columnconfigure(0, weight=1)
         window.rowconfigure(0, weight=1)
@@ -331,10 +445,16 @@ class ScreeningApp:
         plot_window = scroll_canvas.create_window(
             (0, 0), window=plot_inner, anchor="nw"
         )
-        figure = self.screening.make_pareto_figure(
-            result.effect_usage,
-            null_effects=result.design.null_effects,
-        )
+        if self.base_model:
+            from .base_model import make_coefficient_figure
+
+            figure = make_coefficient_figure(
+                result.coefficient_table, null_effects=result.design.null_effects
+            )
+        else:
+            figure = self.screening.make_pareto_figure(
+                result.effect_usage, null_effects=result.design.null_effects
+            )
         mpl_canvas = FigureCanvasTkAgg(figure, master=plot_inner)
         mpl_canvas.draw()
         mpl_widget = mpl_canvas.get_tk_widget()
@@ -379,84 +499,139 @@ class ScreeningApp:
                 tree.insert(
                     "",
                     "end",
-                    values=[
-                        f"{v:.4g}" if isinstance(v, float) else v for v in row
-                    ],
+                    values=[f"{v:.4g}" if isinstance(v, float) else v for v in row],
                 )
-            scroll = ttk.Scrollbar(
-                frame, orient="vertical", command=tree.yview
-            )
+            scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
             tree.configure(yscrollcommand=scroll.set)
             tree.pack(side="left", fill="both", expand=True)
             scroll.pack(side="right", fill="y")
 
-        table_tab("Effect usage", result.effect_usage)
-        table_tab("Parameter usage", result.parameter_usage)
+        if self.base_model:
+            table_tab("Coefficients", result.coefficient_table)
+        else:
+            table_tab("Effect usage", result.effect_usage)
+            table_tab("Parameter usage", result.parameter_usage)
 
         def save():
             directory = filedialog.askdirectory(title="Save screening results")
             if directory:
                 result.save(directory)
-                messagebox.showinfo(
-                    "Results saved", f"Saved results to:\n{directory}"
-                )
+                messagebox.showinfo("Results saved", f"Saved results to:\n{directory}")
 
-        ttk.Button(
-            window, text="Save tables and plot…", command=save
-        ).grid(row=1, column=0, pady=(0, 10))
+        if self.base_model:
+            summary = (
+                f"Selected mixing alpha: {result.fit.selected_alpha:g}  |  "
+                f"Lambda: {result.fit.selected_lambda:.5g}  |  "
+                f"CV: {result.fit.nfolds} folds × {result.fit.repeats} repeats  |  "
+                f"Rule: {result.fit.choose_rule}"
+            )
+        else:
+            summary = f"Fitter: {result.method}  |  {result.fit.nBoot_used} bootstrap members  |  wAIC"
+        ttk.Label(window, text=summary).grid(row=1, column=0, pady=(0, 8))
+        ttk.Button(window, text="Save tables and plot…", command=save).grid(
+            row=2, column=0, pady=(0, 10)
+        )
 
 
-def launch_gui() -> int:
+def launch_gui(*, base_model=False) -> int:
     import tkinter as tk
 
     root = tk.Tk()
-    ScreeningApp(root)
+    ScreeningApp(root, base_model=base_model)
     root.mainloop()
     return 0
 
 
-def run_cli(args) -> int:
-    pd, screening = _load_screening_api()
-    data = pd.read_csv(args.csv)
+def run_cli(args, *, base_model=False) -> int:
+    _pd, screening = _load_screening_api()
+    from .prediction import CSVSnapshot
+
+    snapshot = CSVSnapshot.load(args.csv)
+    data = snapshot.data
     model = (
         screening.MODEL_RESPONSE_SURFACE
         if args.model == "response-surface"
         else screening.MODEL_INTERACTIONS
     )
-    result = screening.run_screening(
-        data,
-        response=args.response,
-        factors=args.factors,
-        categorical=args.categorical,
-        model=model,
-        center_polynomials=args.center_polynomials,
-        n_null_vectors=args.null_vectors,
-        n_boot=args.bootstraps,
-        seed=args.seed,
-        n_jobs=args.jobs,
+    kwargs = {
+        "response": args.response,
+        "factors": args.factors,
+        "categorical": args.categorical,
+        "model": model,
+        "center_polynomials": args.center_polynomials,
+        "n_null_vectors": args.null_vectors,
+        "seed": args.seed,
+        "n_jobs": args.jobs,
+    }
+    alphas = (
+        tuple(args.alphas)
+        if args.alphas
+        else ((0.5, 1.0) if args.method == "elastic_net" else (1.0,))
     )
+    if args.method == "lasso" and alphas != (1.0,):
+        raise ValueError("use --method elastic_net for an alpha search")
+    if base_model:
+        from .base_model import run_base_model
+
+        result = run_base_model(
+            data,
+            alphas=alphas,
+            nfolds=args.folds,
+            repeats=args.repeats,
+            choose_rule=args.rule,
+            **kwargs,
+        )
+    else:
+        result = screening.run_screening(
+            data, method=args.method, alphas=alphas, n_boot=args.bootstraps, **kwargs
+        )
     output = result.save(args.output)
+    if args.save_predictions:
+        saved = result.save_predictions_csv(snapshot)
+        print(
+            f"Predictions: {saved['path']} ({saved['column']}); backup: {saved['backup']}"
+        )
     print(
-        f"Finished {result.fit.nBoot_used} members with "
-        f"{result.workers} workers in {result.elapsed_seconds:.2f}s. "
+        f"Finished using {result.workers} workers in {result.elapsed_seconds:.2f}s. "
         f"Results: {output.resolve()}"
     )
     return 0
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, base_model=False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="SVEM forward-selection variable screening"
+        description="Single cross-validated lasso/elastic net"
+        if base_model
+        else "SVEM variable screening"
     )
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("gui", help="open the desktop application")
-    run = subparsers.add_parser(
-        "run", help="run a CSV analysis without the GUI"
-    )
+    run = subparsers.add_parser("run", help="run a CSV analysis without the GUI")
     run.add_argument("csv", type=Path)
     run.add_argument("--response", required=True)
     run.add_argument("--factors", nargs="+", required=True)
     run.add_argument("--categorical", nargs="*", default=[])
+    run.add_argument(
+        "--method",
+        choices=("lasso", "elastic_net")
+        if base_model
+        else ("lasso", "elastic_net", "forward"),
+        default="lasso",
+    )
+    run.add_argument(
+        "--alphas", type=float, nargs="+", help="mixing alphas in (0,1]; 1=lasso"
+    )
+    run.add_argument(
+        "--save-predictions",
+        action="store_true",
+        help="append predictions to source CSV with an exact-byte backup (default: off)",
+    )
+    if base_model:
+        run.add_argument("--folds", type=int, default=10)
+        run.add_argument("--repeats", type=int, default=5)
+        run.add_argument("--rule", choices=("min", "1se"), default="min")
+    else:
+        run.add_argument("--bootstraps", type=int, default=200)
     run.add_argument(
         "--model",
         choices=("interactions", "response-surface"),
@@ -476,28 +651,26 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help=(
-            "add this many independent standard-normal null main effects "
-            "(default: 0)"
+            "add this many independent standard-normal null main effects (default: 0)"
         ),
     )
-    run.add_argument("--bootstraps", type=int, default=200)
     run.add_argument("--seed", type=int, default=12345)
+    run.add_argument("--jobs", type=int, default=-1, help="-1 uses all available CPUs")
     run.add_argument(
-        "--jobs", type=int, default=-1, help="-1 uses all available CPUs"
-    )
-    run.add_argument(
-        "--output", type=Path, default=Path("svem_screening_results")
+        "--output",
+        type=Path,
+        default=Path("svem_lasso_results" if base_model else "svem_screening_results"),
     )
     return parser
 
 
-def main(argv=None) -> int:
+def main(argv=None, *, base_model=False) -> int:
     multiprocessing.freeze_support()
-    parser = build_parser()
+    parser = build_parser(base_model=base_model)
     args = parser.parse_args(argv)
     if args.command in (None, "gui"):
-        return launch_gui()
-    return run_cli(args)
+        return launch_gui(base_model=base_model)
+    return run_cli(args, base_model=base_model)
 
 
 if __name__ == "__main__":

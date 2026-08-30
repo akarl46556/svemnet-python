@@ -9,12 +9,11 @@ information criteria, plus a deterministic forward-AICc benchmark
 Interfaces
 ----------
 * Matrix API: :func:`fit_svem`, :func:`fit_svem_forward`,
-  :func:`forward_select` on numeric arrays.
+  :func:`forward_select`, :func:`fit_lasso_cv` on numeric arrays.
 * scikit-learn API: :class:`SVEMRegressor` for pipelines and
   cross-validation.
-* Formula API (optional, ``pip install svemnet[formula]``): :func:`svem` and
-  :func:`forward_aicc` on DataFrames with R-style formulas, mirroring the R
-  package SVEMnet.
+* Formula API (optional, ``pip install svemnet[formula]``): :func:`svem`,
+  :func:`forward_aicc`, :func:`lasso_cv` on DataFrames with R-style formulas.
 
 References
 ----------
@@ -44,31 +43,40 @@ from .forward import (
     fit_svem_forward,
     forward_select,
 )
+from .lasso import CVLassoResult, fit_lasso_cv
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
-# The formula-interface names (svem, forward_aicc, SVEMFormulaModel,
-# ForwardAICcModel) are provided lazily via __getattr__ and deliberately
+# The formula-interface names are provided lazily via __getattr__ and deliberately
 # excluded from __all__ so `from svemnet import *` works on installs
 # without the [formula] extra.
 __all__ = [
-    "SVEMGaussianResult",
-    "SVEMForwardResult",
+    "CVLassoResult",
     "ForwardICResult",
+    "SVEMForwardResult",
+    "SVEMGaussianResult",
     "SVEMRegressor",
+    "__version__",
+    "fit_lasso_cv",
     "fit_svem",
     "fit_svem_forward",
     "forward_select",
-    "predict_svem",
-    "make_svem_weights",
     "kish_effective_n",
+    "make_svem_weights",
+    "predict_svem",
+    "response_surface_formula",
     "support_size",
     "weighted_ic_scores",
-    "response_surface_formula",
-    "__version__",
 ]
 
-_FORMULA_EXPORTS = {"svem", "forward_aicc", "SVEMFormulaModel", "ForwardAICcModel"}
+_FORMULA_EXPORTS = {
+    "svem",
+    "forward_aicc",
+    "lasso_cv",
+    "SVEMFormulaModel",
+    "ForwardAICcModel",
+    "CVLassoFormulaModel",
+}
 
 
 def __getattr__(name: str):

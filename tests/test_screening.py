@@ -25,6 +25,8 @@ def test_screening_defaults_are_200_members_centered_no_nulls_and_all_cpus():
     assert signature.parameters["center_polynomials"].default is True
     assert signature.parameters["n_null_vectors"].default == 0
     assert signature.parameters["n_jobs"].default == -1
+    assert signature.parameters["method"].default == "lasso"
+    assert signature.parameters["alphas"].default == (1.0,)
     args = build_parser().parse_args(
         ["run", "data.csv", "--response", "y", "--factors", "x"]
     )
@@ -231,6 +233,7 @@ def test_screening_uses_existing_parallel_engine_and_writes_outputs(tmp_path):
         n_boot=4,
         seed=4,
         n_jobs=2,
+        method="forward",
     )
     output = result.save(tmp_path)
     reproducibility = result.fit.diagnostics["reproducibility"]

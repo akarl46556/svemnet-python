@@ -157,7 +157,7 @@ def fit_svem(
     y: Sequence[float] | np.ndarray,
     *,
     nBoot: int = 100,
-    alpha: Sequence[float] = (0.5, 1.0),
+    alpha: Sequence[float] = (1.0,),
     objective: str = "wAIC",
     weight_scheme: str = "SVEM",
     seed: int | None = None,
@@ -184,8 +184,8 @@ def fit_svem(
         production runs.
     alpha:
         Elastic-net mixing parameters, i.e. scikit-learn ``l1_ratio`` values.
-        Values must be in ``(0, 1]``. The default ``(0.5, 1.0)`` matches the R
-        default used in the requested Gaussian scope.
+        Values must be in ``(0, 1]``. The default ``(1.0,)`` fits lasso.
+        Use ``(0.5, 1.0)`` to search elastic net and lasso jointly.
     objective:
         One of ``"wSSE"``, ``"wAIC"``, or ``"wBIC"``. ``"wAIC"`` is the
         Gaussian default.
