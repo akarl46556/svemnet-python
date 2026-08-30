@@ -42,7 +42,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
         ``"SVEM"`` (default), ``"FRW_plain"``, or ``"Identity"``.
     alphas:
         Elastic-net mixing parameters in (0, 1] (``method="elastic_net"``
-        only). Default ``(0.5, 1.0)``.
+        only). Default ``(1.0,)`` (lasso); use ``(0.5, 1.0)`` for a search.
     debias:
         If True, apply the training-data linear calibration ``a + b * yhat``
         to predictions when eligible (at least 10 bootstrap members and
@@ -77,7 +77,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
         n_boot: int = 100,
         objective: str = "wAIC",
         weight_scheme: str = "SVEM",
-        alphas: Sequence[float] = (0.5, 1.0),
+        alphas: Sequence[float] = (1.0,),
         debias: bool = False,
         groups: Mapping[str, Sequence[int]] | None = None,
         random_state: int | None = None,
