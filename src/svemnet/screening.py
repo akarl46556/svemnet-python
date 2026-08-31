@@ -34,7 +34,7 @@ MODEL_EFFECT_COLOR = "#2878B5"
 METHOD_LASSO = "SVEM lasso"
 METHOD_ELASTIC_NET = "SVEM elastic net search (0.5, 1)"
 METHOD_FORWARD = "SVEM forward selection"
-METHOD_CHOICES = (METHOD_LASSO, METHOD_ELASTIC_NET, METHOD_FORWARD)
+METHOD_CHOICES = (METHOD_FORWARD, METHOD_LASSO, METHOD_ELASTIC_NET)
 
 
 @dataclass(frozen=True)
@@ -351,14 +351,14 @@ def run_screening(
     model: str = MODEL_INTERACTIONS,
     center_polynomials: bool = True,
     n_null_vectors: int = 0,
-    method: str = "lasso",
+    method: str = "forward",
     alphas: Sequence[float] = (1.0,),
     n_boot: int = 200,
     seed: int | None = 12345,
     n_jobs: int | None = -1,
     progress: Callable[[int, int], None] | None = None,
 ) -> ScreeningResult:
-    """Run fixed-wAIC SVEM screening, defaulting to lasso and all CPUs.
+    """Run fixed-wAIC SVEM screening, defaulting to forward selection and all CPUs.
 
     ``n_null_vectors`` adds reproducible standard-normal main effects using
     the analysis seed. They provide a noise-selection benchmark without

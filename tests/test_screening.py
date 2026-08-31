@@ -25,7 +25,7 @@ def test_screening_defaults_are_200_members_centered_no_nulls_and_all_cpus():
     assert signature.parameters["center_polynomials"].default is True
     assert signature.parameters["n_null_vectors"].default == 0
     assert signature.parameters["n_jobs"].default == -1
-    assert signature.parameters["method"].default == "lasso"
+    assert signature.parameters["method"].default == "forward"
     assert signature.parameters["alphas"].default == (1.0,)
     args = build_parser().parse_args(
         ["run", "data.csv", "--response", "y", "--factors", "x"]
@@ -33,6 +33,7 @@ def test_screening_defaults_are_200_members_centered_no_nulls_and_all_cpus():
     assert args.bootstraps == 200
     assert args.center_polynomials is True
     assert args.null_vectors == 0
+    assert args.method == "forward"
     args = build_parser().parse_args(
         [
             "run",
