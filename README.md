@@ -109,9 +109,10 @@ be marked categorical in the third selector. The candidate model is either
 main effects plus all two-way interactions or a response surface (the same
 terms plus squares of continuous factors). The objective is fixed at wAIC,
 the default is 200 bootstrap members, and all available CPUs are used.
-The default fitter is **SVEM lasso**. Choose **SVEM elastic net search (0.5, 1)**
-to compare the two mixing alphas within each bootstrap, or **SVEM forward
-selection** to retain the earlier grouped forward-selection workflow.
+The default fitter is **SVEM forward selection** in the GUI, CLI, and
+`run_screening()` API. Choose **SVEM lasso** for penalized lasso fits, or
+**SVEM elastic net search (0.5, 1)** to compare the two mixing alphas within
+each bootstrap. The separate base-lasso application still defaults to lasso.
 
 **Center polynomials** is enabled by default. For each uncoded
 continuous factor, the complete-case arithmetic mean is subtracted when

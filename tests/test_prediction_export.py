@@ -123,7 +123,7 @@ def test_gui_cli_defaults_and_no_write_opt_in():
     for base in (False, True):
         parsed = build_parser(base_model=base).parse_args(args)
         assert not parsed.save_predictions
-        assert parsed.method == "lasso"
+        assert parsed.method == ("lasso" if base else "forward")
         assert parsed.null_vectors == 0
 
 

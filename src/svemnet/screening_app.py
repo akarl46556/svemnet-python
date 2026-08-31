@@ -616,7 +616,7 @@ def build_parser(*, base_model=False) -> argparse.ArgumentParser:
         choices=("lasso", "elastic_net")
         if base_model
         else ("lasso", "elastic_net", "forward"),
-        default="lasso",
+        default="lasso" if base_model else "forward",
     )
     run.add_argument(
         "--alphas", type=float, nargs="+", help="mixing alphas in (0,1]; 1=lasso"

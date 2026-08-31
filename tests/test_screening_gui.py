@@ -28,7 +28,9 @@ def test_gui_defaults_and_fit_with_opt_in_csv_export(tmp_path, monkeypatch, base
     try:
         app = ScreeningApp(root, base_model=base_model)
         assert not app.save_predictions_var.get()
-        assert app.method_var.get() == ("Lasso" if base_model else "SVEM lasso")
+        assert app.method_var.get() == (
+            "Lasso" if base_model else "SVEM forward selection"
+        )
         assert app.null_vectors_var.get() == "0"
         app._browse()
         assert path.read_bytes() == original
@@ -45,6 +47,8 @@ def test_gui_defaults_and_fit_with_opt_in_csv_export(tmp_path, monkeypatch, base
         assert notices, "GUI fit did not finish"
         assert any(isinstance(child, tk.Toplevel) for child in root.winfo_children())
         assert "Predicted Y" in path.read_text()
+        if not base_model:
+            assert "Predicted Y (forward)" in path.read_text()
         backups = list(tmp_path.glob("*.bak"))
         assert len(backups) == 1 and backups[0].read_bytes() == original
         app._browse()

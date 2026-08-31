@@ -10,7 +10,8 @@ import pytest
 
 @pytest.mark.parametrize("base_model", [False, True])
 @pytest.mark.parametrize("save_predictions", [False, True])
-def test_cli_round_trip(tmp_path, base_model, save_predictions):
+@pytest.mark.parametrize("method", [None, "elastic_net"])
+def test_cli_round_trip(tmp_path, base_model, save_predictions, method):
     path = tmp_path / "data.csv"
     path.write_text("Y,A,B\n1,1,4\n2,2,1\n3,3,5\n4,4,2\n5,5,7\n6,6,3\n7,7,8\n8,8,6\n")
     original = path.read_bytes()
@@ -26,13 +27,13 @@ def test_cli_round_trip(tmp_path, base_model, save_predictions):
         "--factors",
         "A",
         "B",
-        "--method",
-        "elastic_net",
         "--jobs",
         "2",
         "--output",
         str(output),
     ]
+    if method is not None:
+        args += ["--method", method]
     args += ["--folds", "3", "--repeats", "1"] if base_model else ["--bootstraps", "3"]
     if save_predictions:
         args.append("--save-predictions")
@@ -41,7 +42,10 @@ def test_cli_round_trip(tmp_path, base_model, save_predictions):
     )
     assert process.returncode == 0, process.stdout + process.stderr
     metadata = json.loads((output / "run_metadata.json").read_text())
-    assert metadata["alpha_candidates"] == [0.5, 1.0]
+    expected_alphas = [0.5, 1.0] if method else ([1.0] if base_model else [])
+    assert metadata["alpha_candidates"] == expected_alphas
+    if not base_model and method is None:
+        assert metadata["method"] == "forward"
     assert metadata["workers"] == 2
     backups = list(tmp_path.glob("*.bak"))
     if save_predictions:

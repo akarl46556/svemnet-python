@@ -108,6 +108,12 @@ the frozen training design schema for predictions, explicit null inputs,
 source-row positions, exact-byte backups, changed-source checks, and atomic
 CSV replacement. Core hard dependencies remain unchanged.
 
+Default correction (Andrew, 2026-08-31): the SVEM screening GUI, CLI, and
+`run_screening()` default to SVEM forward selection, superseding the
+screening default in the 2026-08-30 note. Keep lasso and elastic-net choices
+available. The separate base-lasso application and dedicated fitting APIs
+are unchanged; this is a routing/default change, not a numerical-kernel change.
+
 ## Working on this repo
 
 - Dev interpreter: `.venv/Scripts/python` (Windows venv with the package
