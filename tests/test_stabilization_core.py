@@ -1,4 +1,6 @@
 """Regression checks for reviewed numerical/API stabilization."""
+from functools import wraps
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -65,12 +67,15 @@ def test_all_expected_solver_failures_raise_and_partial_failures_are_counted(mon
     x, y = toy()
     core._load_sklearn()
     original = core.enet_path
+    # Capability routing must still inspect the installed solver's signature.
+    @wraps(original)
     def broken(*args, **kwargs):
         raise ValueError("simulated numerical failure")
     monkeypatch.setattr(core, "enet_path", broken)
     with pytest.raises(RuntimeError, match="Every bootstrap.*simulated numerical"):
         fit_svem(x, y, nBoot=3, seed=2)
     calls = 0
+    @wraps(original)
     def partial(*args, **kwargs):
         nonlocal calls
         calls += 1
