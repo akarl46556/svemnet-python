@@ -22,12 +22,14 @@ keywords:
   - chemometrics
 preferred-citation:
   type: article
-  title: "SVEMnet: Self-Validated Ensemble Models in R"
+  title: "SVEMnet: An R package for self-validated elastic-net ensembles and multi-response optimization in small-sample mixture-process experiments"
   authors:
     - family-names: Karl
       given-names: Andrew T.
   journal: "Chemometrics and Intelligent Laboratory Systems"
   year: 2026
+  volume: 271
+  start: 105660
   doi: 10.1016/j.chemolab.2026.105660
 references:
   - type: article

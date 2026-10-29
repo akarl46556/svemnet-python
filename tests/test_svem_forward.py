@@ -150,11 +150,10 @@ class TestFitSvemForward:
         np.testing.assert_allclose(result.coef_matrix[:, 1:], 0.0, atol=1e-10)
         np.testing.assert_allclose(result.coef_matrix[:, 0], 5.0, atol=1e-8)
 
-    def test_wsse_tie_selects_first_path_point_minimum(self):
-        # Exact linear response: every path point at/after the true 2-term
-        # model floors the wSSE score, producing exact ties. The documented
-        # first-path-point-minimum rule must pick the most parsimonious tied
-        # point; a last-minimum mutation would report selected_k = 5.
+    def test_wsse_exact_response_stops_at_numerical_noise_floor(self):
+        # Exact linear response: forward growth stops once its training RSS
+        # reaches the same dust rule as R. Raw validation SSE must therefore
+        # not select a larger model that only fits floating-point residue.
         rng = np.random.default_rng(42)
         X = rng.normal(size=(20, 4))
         y = 2.0 + 1.5 * X[:, 0] - 0.5 * X[:, 1]

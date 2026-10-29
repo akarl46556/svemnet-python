@@ -10,6 +10,8 @@ import sys
 import threading
 from pathlib import Path
 
+from .csvio import csv_parse_summary
+
 
 def _load_screening_api():
     try:
@@ -258,7 +260,10 @@ class ScreeningApp:
         for i, name in enumerate(columns):
             if not pd.api.types.is_numeric_dtype(data[name]):
                 self.categorical_list.selection_set(i)
-        self.status_var.set(f"Loaded {len(data):,} rows and {len(columns)} columns.")
+        self.status_var.set(
+            f"Loaded {len(data):,} rows and {len(columns)} columns. "
+            + csv_parse_summary(snapshot.parse_report())
+        )
 
     @staticmethod
     def _selected(widget):
@@ -330,15 +335,31 @@ class ScreeningApp:
                 else "lasso"
             )
             kwargs.update(method=method_key, alphas=alphas, n_boot=n_boot)
-        analysis_data = self.data.copy(deep=True)
         snapshot = self.source_snapshot
+        text_columns = tuple(categorical)
+        try:
+            if snapshot is not None:
+                snapshot._assert_unmodified()
+                analysis_data = snapshot.frame(text_columns=text_columns)
+                parse_note = csv_parse_summary(
+                    snapshot.parse_report(text_columns=text_columns)
+                )
+            else:
+                analysis_data = self.data.copy(deep=True)
+                parse_note = ""
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Could not read CSV roles", str(exc))
+            return
+        source = snapshot.path if snapshot is not None else None
         save_predictions = self.save_predictions_var.get()
         self.run_button.configure(state="disabled")
         self.progress.start(12)
         self.status_var.set(
-            "Fitting cross-validated base model…"
-            if self.base_model
-            else f"Fitting {n_boot} SVEM bootstrap members: {method}…"
+            (
+                "Fitting cross-validated base model…"
+                if self.base_model
+                else f"Fitting {n_boot} SVEM bootstrap members: {method}…"
+            ) + (f" {parse_note}" if parse_note else "")
         )
 
         def task():
@@ -352,10 +373,12 @@ class ScreeningApp:
                 try:
                     if snapshot is None:
                         raise ValueError("load a CSV file before saving predictions")
-                    saved = result.save_predictions_csv(snapshot)
+                    saved = result.save_predictions_csv(
+                        snapshot, text_columns=text_columns
+                    )
                 except Exception as exc:  # noqa: BLE001 - fit remains usable
                     export_error = str(exc)
-            self.events.put(("done", result, saved, export_error))
+            self.events.put(("done", result, saved, export_error, source))
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -379,7 +402,7 @@ class ScreeningApp:
                         f"{result.workers} workers in "
                         f"{result.elapsed_seconds:.1f} seconds."
                     )
-                    self._show_results(result)
+                    self._show_results(result, source=event[4])
                     if event[2]:
                         saved = event[2]
                         messagebox.showinfo(
@@ -413,8 +436,8 @@ class ScreeningApp:
             pass
         self.root.after(100, self._poll_events)
 
-    def _show_results(self, result):
-        from tkinter import filedialog, messagebox, ttk
+    def _show_results(self, result, *, source=None):
+        from tkinter import ttk
 
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
@@ -513,10 +536,7 @@ class ScreeningApp:
             table_tab("Parameter usage", result.parameter_usage)
 
         def save():
-            directory = filedialog.askdirectory(title="Save screening results")
-            if directory:
-                result.save(directory)
-                messagebox.showinfo("Results saved", f"Saved results to:\n{directory}")
+            self._save_results(result, source=source)
 
         if self.base_model:
             summary = (
@@ -532,11 +552,40 @@ class ScreeningApp:
             row=2, column=0, pady=(0, 10)
         )
 
+    def _save_results(self, result, *, source=None):
+        from tkinter import filedialog, messagebox
+
+        directory = filedialog.askdirectory(title="Save screening results")
+        if not directory:
+            return
+        current = self.source_snapshot
+        protected = [source, current.path if current is not None else None]
+        # Also protect a path typed into the file selector since fitting.
+        if self.file_var.get():
+            protected.append(Path(self.file_var.get()))
+        try:
+            result.save(directory, protected=protected)
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Could not save results", str(exc))
+            return
+        messagebox.showinfo("Results saved", f"Saved results to:\n{directory}")
+
 
 def launch_gui(*, base_model=False) -> int:
-    import tkinter as tk
-
-    root = tk.Tk()
+    try:
+        import tkinter as tk
+    except ImportError as exc:
+        raise SystemExit(
+            "The desktop app requires Python's Tk support (tkinter). "
+            "Install Tcl/Tk for this Python, or use the 'run' command-line mode."
+        ) from exc
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        raise SystemExit(
+            "Could not open the Tk desktop window. Check Tcl/Tk and display "
+            "availability, or use the 'run' command-line mode."
+        ) from exc
     ScreeningApp(root, base_model=base_model)
     root.mainloop()
     return 0
@@ -546,8 +595,11 @@ def run_cli(args, *, base_model=False) -> int:
     _pd, screening = _load_screening_api()
     from .prediction import CSVSnapshot
 
-    snapshot = CSVSnapshot.load(args.csv)
+    snapshot = CSVSnapshot.load(args.csv, text_columns=args.categorical)
     data = snapshot.data
+    parse_note = csv_parse_summary(snapshot.parse_report())
+    if parse_note:
+        print(parse_note, file=sys.stderr)
     model = (
         screening.MODEL_RESPONSE_SURFACE
         if args.model == "response-surface"
@@ -585,7 +637,7 @@ def run_cli(args, *, base_model=False) -> int:
         result = screening.run_screening(
             data, method=args.method, alphas=alphas, n_boot=args.bootstraps, **kwargs
         )
-    output = result.save(args.output)
+    output = result.save(args.output, protected=(snapshot.path,))
     if args.save_predictions:
         saved = result.save_predictions_csv(snapshot)
         print(
@@ -610,7 +662,10 @@ def build_parser(*, base_model=False) -> argparse.ArgumentParser:
     run.add_argument("csv", type=Path)
     run.add_argument("--response", required=True)
     run.add_argument("--factors", nargs="+", required=True)
-    run.add_argument("--categorical", nargs="*", default=[])
+    run.add_argument(
+        "--categorical", nargs="*", default=[],
+        help="categorical factors; preserve literal CSV labels (including NA and leading zeros)",
+    )
     run.add_argument(
         "--method",
         choices=("lasso", "elastic_net")

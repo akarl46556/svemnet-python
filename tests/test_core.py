@@ -91,17 +91,17 @@ class TestScores:
         out = weighted_ic_scores(sse, k, n_like=8.0, n_eff_adm=3.0, objective="wAIC")
         assert np.isfinite(out[0]) and np.isinf(out[1])
 
-    def test_wsse_is_floored_sse(self):
+    def test_wsse_is_raw_sse(self):
         sse = np.array([0.0, 3.0])
         out = weighted_ic_scores(sse, np.array([1, 2]), n_like=5.0, n_eff_adm=5.0,
                                  objective="wSSE")
-        assert out[0] == _FLOAT_EPS and out[1] == 3.0
+        assert out[0] == 0.0 and out[1] == 3.0
 
 
 class TestSupportSize:
     def test_counts_intercept_structurally(self):
         path = np.array([[1.0, 1.0], [0.0, 2.0], [1e-12, -3.0]])
-        np.testing.assert_array_equal(support_size(path), [1, 3])
+        np.testing.assert_array_equal(support_size(path), [2, 3])
 
 
 class TestFitSvem:
@@ -184,7 +184,7 @@ class TestFitSvem:
         pred = X @ coef_path[1:, :] + coef_path[0:1, :]
         resid = pred - y[:, None]
         sse = np.sum(w_valid[:, None] * resid**2, axis=0)
-        k = support_size(coef_path, base_tol=1e-7)
+        k = support_size(coef_path, base_tol=0.0)
         _, n_eff_adm = kish_effective_n(w_valid, n=n)
         scores = weighted_ic_scores(
             sse, k, n_like=float(w_valid.sum()), n_eff_adm=n_eff_adm,

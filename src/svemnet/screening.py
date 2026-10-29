@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import time
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from numbers import Integral
+from numbers import Integral, Real
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +19,8 @@ except ImportError as exc:  # pragma: no cover
         "Install them with: pip install 'svemnet[screening]'"
     ) from exc
 
-from .core import fit_svem
+from .core import _numerically_constant_columns, _validate_seed, fit_svem
+from .csvio import assert_no_protected_collision, dumps_metadata
 from .expansion import response_surface_formula
 from .formula import SVEMFormulaModel, _design_from_formula
 from .forward import fit_svem_forward
@@ -48,9 +49,11 @@ class ScreeningDesign:
     response: str
     factors: tuple[str, ...]
     categorical: tuple[str, ...]
+    categorical_levels: dict[str, tuple[object, ...]]
     continuous: tuple[str, ...]
     center_polynomials: bool
     polynomial_centers: dict[str, float]
+    polynomial_snap_bounds: dict[str, float]
     null_effects: tuple[str, ...]
     null_seed: int | None
     rows_dropped: int
@@ -59,6 +62,7 @@ class ScreeningDesign:
     model_spec: object
     centered_spec: object
     null_values: np.ndarray
+    warnings: tuple[str, ...]
 
     def transform(self, data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         """Reapply training schema; return complete-row matrix and row positions.
@@ -73,11 +77,21 @@ class ScreeningDesign:
             raise ValueError(f"prediction columns were not found: {missing}")
         selected = data.loc[:, list(required)].copy()
         for name in (*self.continuous, *self.null_effects):
-            selected[name] = pd.to_numeric(selected[name], errors="raise")
+            original = selected[name]
+            numeric = pd.to_numeric(original, errors="coerce")
+            invalid = original.notna() & ~np.isfinite(numeric)
+            if invalid.any():
+                positions = np.flatnonzero(invalid.to_numpy()).tolist()
+                warnings.warn(
+                    f"prediction factor {name!r} has invalid numeric values at "
+                    f"row positions {positions}; those rows receive NaN predictions",
+                    stacklevel=2,
+                )
+            selected[name] = numeric.where(np.isfinite(numeric))
         for name in self.categorical:
-            # CSV reloads numeric-coded categories as numeric. Preserve the
-            # fitted factor role; the frozen ModelSpec still controls levels.
-            selected[name] = selected[name].astype("category")
+            levels = self.categorical_levels[name]
+            values = [_align_category(value, levels, name) for value in selected[name]]
+            selected[name] = pd.Categorical(values, categories=levels)
         rows = np.flatnonzero(selected.notna().all(axis=1).to_numpy())
         selected = selected.iloc[rows].reset_index(drop=True)
         if len(rows) == 0:
@@ -88,15 +102,14 @@ class ScreeningDesign:
         )
         X = raw_model._design(selected)
         if self.center_polynomials:
-            centered = selected.copy()
-            for name, center in self.polynomial_centers.items():
-                centered[name] = centered[name] - center
+            centered = _center_polynomials(selected, self.polynomial_centers, self.polynomial_snap_bounds)
             centered_model = SVEMFormulaModel(
                 None, self.centered_spec, names, self.formula, self.groups
             )
             centered_X = centered_model._design(centered)
             for name in self.continuous:
-                centered_X[:, self.groups[name]] = X[:, self.groups[name]]
+                columns = self.groups.get(name, ())
+                centered_X[:, columns] = X[:, columns]
             X = centered_X
         if self.null_effects:
             X = np.column_stack(
@@ -119,6 +132,8 @@ class ScreeningResult(PredictionMixin):
     alphas: tuple[float, ...]
 
     def metadata(self) -> dict[str, object]:
+        from . import __version__
+
         return {
             "response": self.design.response,
             "intercept": float(self.fit.coefficients[0]),
@@ -135,10 +150,15 @@ class ScreeningResult(PredictionMixin):
             "continuous_factors": list(self.design.continuous),
             "center_polynomials": self.design.center_polynomials,
             "polynomial_centers": dict(self.design.polynomial_centers),
+            "polynomial_snap_bounds": dict(self.design.polynomial_snap_bounds),
             "null_vector_count": len(self.design.null_effects),
             "null_effects": list(self.design.null_effects),
             "null_vector_distribution": "independent standard normal",
             "null_vector_seed": self.design.null_seed,
+            "null_rng": (
+                "SeedSequence(seed).spawn(1)[0] -> PCG64.standard_normal"
+                "((source_rows, k)), C order"
+            ),
             "formula": self.design.formula,
             "rows_used": int(self.design.X.shape[0]),
             "rows_dropped": self.design.rows_dropped,
@@ -149,19 +169,29 @@ class ScreeningResult(PredictionMixin):
             "workers": self.workers,
             "elapsed_seconds": self.elapsed_seconds,
             "seed": self.fit.seed,
+            "warnings": list(dict.fromkeys((
+                *self.design.warnings, *self.fit.diagnostics.get("warnings", ())
+            ))),
+            "svemnet_version": __version__,
             "svemnet_parallel_backend": self.fit.diagnostics["reproducibility"].get(
                 "parallel_backend_preference"
             ),
         }
 
-    def save(self, output_dir: str | Path) -> Path:
-        """Write effect/parameter tables, metadata, and the Pareto plot."""
+    def save(self, output_dir: str | Path, *, protected=()) -> Path:
+        """Write reports after checking every destination against source files."""
         output = Path(output_dir)
+        planned = [output / name for name in (
+            "effect_usage.csv", "parameter_usage.csv", "run_metadata.json",
+            "effect_usage_pareto.png",
+        )]
+        assert_no_protected_collision(planned, protected)
+        metadata = dumps_metadata(self.metadata())
         output.mkdir(parents=True, exist_ok=True)
         self.effect_usage.to_csv(output / "effect_usage.csv", index=False)
         self.parameter_usage.to_csv(output / "parameter_usage.csv", index=False)
         (output / "run_metadata.json").write_text(
-            json.dumps(self.metadata(), indent=2), encoding="utf-8"
+            metadata, encoding="utf-8"
         )
         figure = make_pareto_figure(
             self.effect_usage, null_effects=self.design.null_effects
@@ -171,6 +201,56 @@ class ScreeningResult(PredictionMixin):
 
         plt.close(figure)
         return output
+
+
+def _center_polynomials(data, centers, bounds):
+    centered = data.copy()
+    for name, center in centers.items():
+        values = centered[name] - center
+        centered[name] = values.where(np.abs(values) > bounds[name], 0.0)
+    return centered
+
+
+def _align_category(value, levels, name):
+    """Align numeric CSV reloads only when their frozen label is unambiguous."""
+    if pd.isna(value):
+        return np.nan
+    if value in levels:
+        return value
+    if isinstance(value, Real) and not isinstance(value, (bool, np.bool_)):
+        matches = []
+        for level in levels:
+            if isinstance(level, str):
+                try:
+                    equal = float(level) == value
+                except ValueError:
+                    equal = False
+                if equal:
+                    matches.append(level)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise ValueError(
+                f"numeric category {value!r} for {name!r} is ambiguous among "
+                f"fitted levels {matches}; supply the original string labels"
+            )
+    raise ValueError(
+        f"new data contains factor levels not seen at fit time: "
+        f"{name!r}={value!r}; fitted levels are {list(levels)!r}. "
+        "Preserve the training category labels and dtype."
+    )
+
+
+_NUMERIC_MISSING_TOKENS = frozenset(
+    ("NA", "N/A", "n/a", "NaN", "nan", "NULL", "null", "None", "#N/A", "<NA>")
+)
+
+
+def _training_numeric(series):
+    """Infer numeric roles from candidate training values, not scoring rows."""
+    numeric = pd.to_numeric(series, errors="coerce")
+    convertible = numeric.notna() | series.isna() | series.isin(_NUMERIC_MISSING_TOKENS)
+    return numeric if convertible.all() and numeric.notna().any() else None
 
 
 def build_screening_design(
@@ -222,6 +302,10 @@ def build_screening_design(
     if n_null_vectors < 0:
         raise ValueError("n_null_vectors must be a nonnegative integer")
 
+    null_seed = _validate_seed(null_seed)
+    n_null_vectors = int(n_null_vectors)
+    design_warnings: list[str] = []
+
     selected = data.loc[:, [response, *factors]].copy()
     before = len(selected)
     training_rows = np.flatnonzero(selected.notna().all(axis=1).to_numpy())
@@ -230,14 +314,38 @@ def build_screening_design(
         raise ValueError("no complete rows remain after dropping missing values")
     selected[response] = pd.to_numeric(selected[response], errors="raise")
 
-    auto_categorical = [
-        name for name in factors if not pd.api.types.is_numeric_dtype(selected[name])
-    ]
-    categorical_set = set(categorical_requested) | set(auto_categorical)
+    while True:
+        categorical_set = set(categorical_requested)
+        for name in factors:
+            if name in categorical_set or isinstance(selected[name].dtype, pd.CategoricalDtype):
+                categorical_set.add(name)
+                continue
+            numeric_values = _training_numeric(selected[name])
+            if numeric_values is None:
+                categorical_set.add(name)
+            else:
+                selected[name] = numeric_values
+        # Recognizing a numeric missing token can exclude a row which should
+        # not determine another factor's role. Re-infer on the remaining rows.
+        complete = selected.notna().all(axis=1).to_numpy()
+        if complete.all():
+            break
+        training_rows = training_rows[complete]
+        selected = selected.loc[complete].reset_index(drop=True)
+        if selected.empty:
+            raise ValueError("no complete rows remain after dropping missing values")
     nominal = tuple(name for name in factors if name in categorical_set)
     continuous = tuple(name for name in factors if name not in categorical_set)
+    categorical_levels = {}
     for name in nominal:
-        selected[name] = selected[name].astype("category")
+        values = selected[name].astype("category")
+        unused = list(values.cat.categories[~values.cat.categories.isin(values)])
+        if unused:
+            message = f"dropping unused categories for {name!r}: {unused!r}"
+            design_warnings.append(message)
+            warnings.warn(message, stacklevel=2)
+        selected[name] = values.cat.remove_unused_categories()
+        categorical_levels[name] = tuple(selected[name].cat.categories)
     for name in continuous:
         selected[name] = pd.to_numeric(selected[name], errors="raise")
 
@@ -261,23 +369,26 @@ def build_screening_design(
         polynomial_order=polynomial_order,
     )
     y, X_raw, feature_names, groups, model_spec = _design_from_formula(
-        formula, selected
+        formula, selected, prune_zero_columns=False
     )
     centered_spec = None
     polynomial_centers: dict[str, float] = {}
+    polynomial_snap_bounds: dict[str, float] = {}
     X = X_raw
     if center_polynomials:
         polynomial_centers = {name: float(selected[name].mean()) for name in continuous}
-        centered = selected.copy()
-        for name, center in polynomial_centers.items():
-            centered[name] = centered[name] - center
+        polynomial_snap_bounds = {
+            name: len(selected) * np.finfo(float).eps * float(np.max(np.abs(selected[name])))
+            for name in continuous
+        }
+        centered = _center_polynomials(selected, polynomial_centers, polynomial_snap_bounds)
         (
             centered_y,
             centered_X,
             centered_names,
             centered_groups,
             centered_spec,
-        ) = _design_from_formula(formula, centered)
+        ) = _design_from_formula(formula, centered, prune_zero_columns=False)
         if centered_names != feature_names or centered_groups != groups:
             raise RuntimeError(
                 "centering changed the formulaic design structure unexpectedly"
@@ -294,11 +405,45 @@ def build_screening_design(
                     f"could not identify the continuous main effect {name!r}"
                 )
             X[:, main_columns] = X_raw[:, main_columns]
-    design_groups = dict(groups)
+    # Prune only after combining raw main effects with centered interactions
+    # and powers: an OFAT interaction can be zero in just one of these bases.
+    empty_effects = [name for name, columns in groups.items() if not columns]
+    constant_mask = _numerically_constant_columns(X)
+    zero_mask = ~np.any(X, axis=0)
+    keep = np.flatnonzero(~constant_mask).tolist()
+    for dropped_mask, reason in (
+        (zero_mask, "all-zero"),
+        (constant_mask & ~zero_mask, "numerically constant"),
+    ):
+        if np.any(dropped_mask):
+            dropped = [name for name, flag in zip(feature_names, dropped_mask) if flag]
+            message = (
+                f"dropping {reason} final design column(s) {dropped}; "
+                "those columns were not tested"
+            )
+            design_warnings.append(message)
+            warnings.warn(message, stacklevel=2)
+    if len(keep) != X.shape[1]:
+        remap = {old: new for new, old in enumerate(keep)}
+        X = X[:, keep]
+        feature_names = tuple(feature_names[j] for j in keep)
+        groups = {
+            name: tuple(remap[j] for j in columns if j in remap)
+            for name, columns in groups.items()
+        }
+        groups = {name: columns for name, columns in groups.items() if columns}
+    if empty_effects:
+        message = (
+            f"dropping effect(s) with no design columns {empty_effects}; "
+            "their training categories are constant, so no effect was tested"
+        )
+        design_warnings.append(message)
+        warnings.warn(message, stacklevel=2)
+    design_groups = {name: columns for name, columns in groups.items() if columns}
     null_effects: list[str] = []
     null_values = np.empty((before, 0))
     if n_null_vectors:
-        rng = np.random.default_rng(null_seed)
+        rng = np.random.default_rng(np.random.SeedSequence(null_seed).spawn(1)[0])
         null_values = rng.standard_normal((before, n_null_vectors))
         null_matrix = null_values[training_rows]
         used_names = set(feature_names) | set(design_groups) | set(data.columns)
@@ -318,7 +463,7 @@ def build_screening_design(
         for offset, name in enumerate(null_effects):
             design_groups[name] = (first_null_column + offset,)
 
-    return ScreeningDesign(
+    design = ScreeningDesign(
         data=selected,
         y=y,
         X=X,
@@ -328,9 +473,11 @@ def build_screening_design(
         response=response,
         factors=factors,
         categorical=nominal,
+        categorical_levels=categorical_levels,
         continuous=continuous,
         center_polynomials=bool(center_polynomials),
         polynomial_centers=polynomial_centers,
+        polynomial_snap_bounds=polynomial_snap_bounds,
         null_effects=tuple(null_effects),
         null_seed=null_seed if n_null_vectors else None,
         rows_dropped=before - len(selected),
@@ -339,7 +486,15 @@ def build_screening_design(
         model_spec=model_spec,
         centered_spec=centered_spec,
         null_values=null_values,
+        warnings=tuple(design_warnings),
     )
+    training = selected.copy()
+    for index, name in enumerate(null_effects):
+        training[name] = null_values[training_rows, index]
+    reconstructed, rows = design.transform(training)
+    if not np.array_equal(rows, np.arange(len(selected))) or not np.array_equal(reconstructed, X):
+        raise RuntimeError("the frozen screening design does not reproduce its training matrix")
+    return design
 
 
 def run_screening(
@@ -352,7 +507,7 @@ def run_screening(
     center_polynomials: bool = True,
     n_null_vectors: int = 0,
     method: str = "forward",
-    alphas: Sequence[float] = (1.0,),
+    alphas: Sequence[float] | None = None,
     n_boot: int = 200,
     seed: int | None = 12345,
     n_jobs: int | None = -1,
@@ -361,11 +516,16 @@ def run_screening(
     """Run fixed-wAIC SVEM screening, defaulting to forward selection and all CPUs.
 
     ``n_null_vectors`` adds reproducible standard-normal main effects using
-    the analysis seed. They provide a noise-selection benchmark without
-    changing the requested candidate-model expansion.
+    a separate stream derived from the analysis seed. They provide a
+    noise-selection benchmark without changing the fitting random stream.
+    ``method="elastic_net"`` defaults to mixing alphas ``(0.5, 1.0)``;
+    ``method="lasso"`` uses ``(1.0,)``.
     """
     if method not in ("lasso", "elastic_net", "forward"):
         raise ValueError("method must be 'lasso', 'elastic_net', or 'forward'")
+    seed = _validate_seed(seed)
+    if alphas is None:
+        alphas = (0.5, 1.0) if method == "elastic_net" else (1.0,)
     if method == "lasso" and tuple(np.atleast_1d(alphas)) != (1.0,):
         raise ValueError("use method='elastic_net' to search mixing alphas")
     design = build_screening_design(
@@ -393,7 +553,7 @@ def run_screening(
         frequencies = fit.selection_frequencies
     else:
         fit = fit_svem(design.X, design.y, alpha=alphas, **fit_options)
-        nonzero = np.abs(fit.coef_matrix[:, 1:]) > 1e-8
+        nonzero = fit.coef_matrix[:, 1:] != 0.0
         frequencies = {
             name: np.any(nonzero[:, columns], axis=1).mean()
             for name, columns in design.groups.items()
@@ -411,12 +571,13 @@ def run_screening(
                 "Parameters": len(design.groups[name]),
             }
             for name, frequency in frequencies.items()
-        ]
+        ],
+        columns=["Effect", "Percent Used", "Parameters"],
     ).sort_values(
         ["Percent Used", "Effect"], ascending=[False, True], ignore_index=True
     )
 
-    parameter_percent = 100.0 * (np.abs(fit.coef_matrix[:, 1:]) > 1.0e-8).mean(axis=0)
+    parameter_percent = 100.0 * (fit.coef_matrix[:, 1:] != 0.0).mean(axis=0)
     parameter_usage = pd.DataFrame(
         {
             "Parameter": design.feature_names,

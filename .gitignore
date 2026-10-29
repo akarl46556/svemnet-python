@@ -10,3 +10,9 @@ dist/
 htmlcov/
 .ipynb_checkpoints/
 validation/output/
+
+# Internal review evidence and the sole rescued unfinished prototype.
+project_review/
+diagnostics/
+development/jmp-screening-prototype/
+tmp/

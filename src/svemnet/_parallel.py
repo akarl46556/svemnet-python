@@ -74,7 +74,8 @@ def _run_parallel(
         )
     except Exception as exc:
         raise RuntimeError(
-            "Parallel SVEM bootstrap fitting failed. Retry with n_jobs=1 "
+            f"Parallel SVEM bootstrap fitting failed ({type(exc).__name__}: {exc}). "
+            "Retry with n_jobs=1 "
             "when running in JMP or another embedded Python environment."
         ) from exc
 

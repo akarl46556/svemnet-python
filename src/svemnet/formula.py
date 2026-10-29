@@ -40,19 +40,45 @@ except ImportError as exc:  # pragma: no cover - exercised without the extra
 from .core import fit_svem
 from .forward import ForwardICResult, fit_svem_forward, forward_select
 
-_INTERCEPT_TERMS = {"1", "Intercept"}
-
-
-def _design_from_formula(formula: str, data: "pd.DataFrame"):
+def _design_from_formula(formula: str, data: "pd.DataFrame", *,
+                         prune_zero_columns: bool = True,
+                         return_metadata: bool = False):
     """Build (y, X, feature_names, groups, model_spec) from a two-sided formula.
 
     The structural intercept column is removed from ``X`` (the fitters add
     their own); whole-effect groups map each non-intercept term to its
     contrast-block columns so factors enter forward paths as a unit.
     """
-    matrices = Formula(formula).get_model_matrix(data)
+    if not isinstance(data, pd.DataFrame):
+        raise TypeError("data must be a pandas DataFrame")
+    # Formulaic removes missing rows by index label. Use positional labels so
+    # duplicate source labels cannot remove additional, otherwise valid rows.
+    positional = data.copy(deep=False)
+    positional.index = pd.RangeIndex(len(data))
+    dropped_rows: set[int] = set()
+    matrices = Formula(formula).get_model_matrix(positional, drop_rows=dropped_rows)
     if not hasattr(matrices, "lhs") or not hasattr(matrices, "rhs"):
         raise ValueError("formula must be two-sided, e.g. 'y ~ X1 + X2'")
+    removed_categories = {}
+    retained = tuple(int(i) for i in matrices.rhs.index)
+    required = {str(variable) for variable in matrices.rhs.model_spec.required_variables}
+    for name in required.intersection(positional.columns):
+        column = positional[name]
+        if not isinstance(column.dtype, pd.CategoricalDtype):
+            continue
+        observed = column.iloc[list(retained)].dropna().unique()
+        absent = tuple(level for level in column.cat.categories if level not in observed)
+        if absent:
+            removed_categories[name] = absent
+            positional[name] = column.cat.remove_categories(absent)
+    if removed_categories:
+        matrices = Formula(formula).get_model_matrix(positional)
+        detail = "; ".join(f"{name}: {list(levels)!r}"
+                           for name, levels in sorted(removed_categories.items()))
+        _pywarnings.warn(
+            f"Removed unobserved categorical level(s) from formula predictors: {detail}.",
+            stacklevel=3,
+        )
     lhs, rhs = matrices.lhs, matrices.rhs
     y = np.asarray(lhs, dtype=float)
     if y.ndim != 2 or y.shape[1] != 1:
@@ -61,11 +87,18 @@ def _design_from_formula(formula: str, data: "pd.DataFrame"):
 
     spec = rhs.model_spec
     columns = list(rhs.columns)
+    if sum(len(indices) for indices in spec.term_indices.values()) != len(columns):
+        raise ValueError(
+            "formula terms produced duplicate design-column names; a predictor "
+            "named 'Intercept' conflicts with Formulaic's intercept. Rename the "
+            "conflicting input column or use the numeric matrix API."
+        )
     intercept_cols: list[int] = []
     groups: dict[str, tuple[int, ...]] = {}
     for term, idx in spec.term_indices.items():
         term_str = str(term)
-        if term_str in _INTERCEPT_TERMS:
+        if all(str(factor) == "1" and factor.eval_method.value == "literal"
+               for factor in term.factors):
             intercept_cols.extend(int(i) for i in idx)
         else:
             groups[term_str] = tuple(int(i) for i in idx)
@@ -88,7 +121,7 @@ def _design_from_formula(formula: str, data: "pd.DataFrame"):
     # deficient (and so never selectable by the forward engines). Drop such
     # columns with a warning; the level was never estimable anyway.
     zero_cols = [j for j in range(X.shape[1]) if not np.any(X[:, j])]
-    if zero_cols:
+    if prune_zero_columns and zero_cols:
         dropped = [feature_names[j] for j in zero_cols]
         _pywarnings.warn(
             "dropping all-zero design column(s) "
@@ -105,7 +138,23 @@ def _design_from_formula(formula: str, data: "pd.DataFrame"):
             for name, cols in groups.items()
         }
         groups = {name: cols for name, cols in groups.items() if cols}
-    return y, X, feature_names, groups, spec
+    kept_rows = tuple(int(i) for i in rhs.index)
+    dropped_rows = set(range(len(data))).difference(kept_rows)
+    metadata = {
+        "source_row_count": len(data),
+        "unused_categorical_levels": removed_categories,
+        "training_row_positions": kept_rows,
+        "dropped_row_positions": tuple(sorted(dropped_rows)),
+        "training_row_labels": tuple(data.index[i] for i in kept_rows),
+    }
+    if dropped_rows:
+        _pywarnings.warn(
+            f"Dropped {len(dropped_rows)} training row(s) with missing model values; "
+            "training_row_positions_ records the retained source positions.",
+            stacklevel=3,
+        )
+    result = (y, X, feature_names, groups, spec)
+    return (*result, metadata) if return_metadata else result
 
 
 class SVEMFormulaModel:
@@ -119,12 +168,18 @@ class SVEMFormulaModel:
     """
 
     def __init__(self, result, model_spec, feature_names, formula: str,
-                 groups: Mapping[str, Sequence[int]]):
+                 groups: Mapping[str, Sequence[int]], training_metadata=None):
         self.result_ = result
         self.model_spec_ = model_spec
         self.feature_names_ = tuple(feature_names)
         self.formula_ = formula
         self.groups_ = dict(groups)
+        metadata = dict(training_metadata or {})
+        self.training_row_positions_ = metadata.get("training_row_positions")
+        self.dropped_row_positions_ = metadata.get("dropped_row_positions", ())
+        self.training_row_labels_ = metadata.get("training_row_labels")
+        self.source_row_count_ = metadata.get("source_row_count")
+        self.unused_categorical_levels_ = metadata.get("unused_categorical_levels", {})
 
     def _design(self, data: "pd.DataFrame") -> np.ndarray:
         # formulaic warns and silently encodes unseen factor levels as the
@@ -177,7 +232,7 @@ class SVEMFormulaModel:
         coefs = np.asarray(self.result_.coefficients, dtype=float)
         names = ("Intercept",) + self.feature_names_
         cm = np.asarray(self.result_.coef_matrix, dtype=float)
-        nonzero = (np.abs(cm) > 1e-8).mean(axis=0)
+        nonzero = (cm != 0.0).mean(axis=0)
         return pd.DataFrame(
             {
                 "coefficient": coefs,
@@ -226,7 +281,9 @@ def svem(
     contrast blocks enter together. ``n_jobs`` controls bootstrap workers;
     the default ``1`` remains serial for JMP and other embedded interpreters.
     """
-    y, X, names, groups, spec = _design_from_formula(formula, data)
+    y, X, names, groups, spec, metadata = _design_from_formula(
+        formula, data, return_metadata=True
+    )
     if method == "elastic_net":
         result = fit_svem(
             X,
@@ -255,7 +312,7 @@ def svem(
         )
     else:
         raise ValueError("method must be 'elastic_net' or 'forward'")
-    return SVEMFormulaModel(result, spec, names, formula, groups)
+    return SVEMFormulaModel(result, spec, names, formula, groups, metadata)
 
 
 class ForwardAICcModel(SVEMFormulaModel):
@@ -298,7 +355,9 @@ def forward_aicc(
     single-model benchmark companion to :func:`svem`. Whole-effect groups
     come from the formula terms, so factor contrast blocks enter together.
     """
-    y, X, names, groups, spec = _design_from_formula(formula, data)
+    y, X, names, groups, spec, metadata = _design_from_formula(
+        formula, data, return_metadata=True
+    )
     result: ForwardICResult = forward_select(
         X,
         y,
@@ -307,7 +366,7 @@ def forward_aicc(
         feature_names=names,
         improvement_tolerance=improvement_tolerance,
     )
-    return ForwardAICcModel(result, spec, names, formula, groups)
+    return ForwardAICcModel(result, spec, names, formula, groups, metadata)
 
 
 class CVLassoFormulaModel(SVEMFormulaModel):
@@ -334,11 +393,13 @@ def lasso_cv(formula, data, *, alphas=(1.0,), nfolds=10, repeats=5,
     """
     from .lasso import fit_lasso_cv
 
-    y, X, names, groups, spec = _design_from_formula(formula, data)
+    y, X, names, groups, spec, metadata = _design_from_formula(
+        formula, data, return_metadata=True
+    )
     result = fit_lasso_cv(X, y, alphas=alphas, nfolds=nfolds, repeats=repeats,
                          choose_rule=choose_rule, seed=seed, n_jobs=n_jobs,
                          feature_names=names)
-    return CVLassoFormulaModel(result, spec, names, formula, groups)
+    return CVLassoFormulaModel(result, spec, names, formula, groups, metadata)
 
 
 __all__ = [

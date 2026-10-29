@@ -128,3 +128,36 @@ are unchanged; this is a routing/default change, not a numerical-kernel change.
   their code cells.
 - `validation/output/` is gitignored ephemeral output; the harness scripts
   themselves are versioned.
+
+## Canonical checkout and cleanup (2026-10-29)
+
+`Y:/codex/repos/svemnet-python` is the canonical checkout on the verified primary
+machine. Resolve the machine profile before using paths on any other machine.
+Routine maintenance happens here. Create a feature worktree only when isolation
+is useful for an active task; do not create a new folder for each version or test.
+After integration, verify status, patch equivalence, ignored files and active
+processes, then remove the worktree through Git. Preserve branch refs unless
+separately asked to delete them. Never discard unique dirty work as cleanup.
+
+The only preserved unfinished JMP prototype lives in the ignored
+`development/jmp-screening-prototype/`, with its original base revision and
+SHA256 manifest. It is not current package source and must not be merged over
+`src/svemnet`. Never run `git clean -x` in this checkout: it would delete this
+sole preserved copy and private review evidence. Do not publish internal
+`project_review/`, `diagnostics/` or prototype material.
+
+Use the declared `.venv` and profile-managed shared caches. This Windows venv
+currently includes system site packages intentionally; do not clone or rebuild
+numerical environments per task without a demonstrated dependency need.
+Incidental builds, parity results and profiling belong under the resolved
+workspace `tmp/` task directory, with explicit absolute output arguments.
+
+The R counterpart remains `svemnet-update/SVEMnet`; the separate experimental
+harness remains `svemnet-update/research/svemnet_lab`. Numerical fixes that
+intentionally depart from the research reference must be documented in the
+changelog and validated by the R parity harness. Source history is not a reason
+to retain a demonstrated numerical bug.
+
+Before any release, run the full tests, build and twine checks, and
+`python tools/check_distribution.py ABSOLUTE_DIST_DIR`. The sdist allowlist is
+intentional. A successful local build does not authorize tagging or publishing.

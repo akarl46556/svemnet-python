@@ -268,8 +268,11 @@ The forward-selection engines here and the R functions `forward_aicc()` /
 `svem_forward()` (SVEMnet ≥ 3.5.0) are ports of the same reference
 implementation and validate against each other numerically. The lasso /
 elastic-net base learners use scikit-learn's coordinate descent rather than
-glmnet, so individual path fits can differ slightly in lambda gridding;
-ensemble predictions agree closely in practice.
+glmnet, so path fits differ in their numerical conventions and lambda gridding.
+In particular, glmnet internally scales the Gaussian response when constructing
+elastic-net paths; scikit-learn does not. Rescaling the response can therefore
+change Python elastic-net selections for alpha < 1. Lasso and forward parity
+checks do not imply exact elastic-net agreement across solvers.
 
 **Scope.** This package is intentionally minimal: Gaussian responses,
 lasso/elastic-net and forward-selection base learners, prediction with
@@ -289,8 +292,9 @@ users have SVEM built into Generalized Regression.
 - Karl, A. T. (2024). A randomized permutation whole-model test for SVEM.
   *Chemometrics and Intelligent Laboratory Systems*, 249, 105122.
   [doi:10.1016/j.chemolab.2024.105122](https://doi.org/10.1016/j.chemolab.2024.105122)
-- Karl, A. T. (2026). SVEMnet: Self-Validated Ensemble Models in R.
-  *Chemometrics and Intelligent Laboratory Systems*.
+- Karl, A. T. (2026). SVEMnet: An R package for self-validated elastic-net
+  ensembles and multi-response optimization in small-sample mixture-process
+  experiments. *Chemometrics and Intelligent Laboratory Systems*, 271, 105660.
   [doi:10.1016/j.chemolab.2026.105660](https://doi.org/10.1016/j.chemolab.2026.105660)
 - Xu, L., Gotwalt, C., Hong, Y., King, C. B., & Meeker, W. Q. (2020).
   Applications of the fractional-random-weight bootstrap. *The American
@@ -303,3 +307,33 @@ for the method and Karl (2026) for the software.
 ## License
 
 MIT. Copyright (c) 2026 Andrew T. Karl.
+
+## Statistical and numerical interpretation
+
+`wAIC` means a validation-weighted AIC-like tuning score; it is not Bayesian
+WAIC. The FRW training and validation copies reuse the same observations, so
+these scores are heuristic selectors rather than classical information
+criteria or held-out error estimates. Mean-one validation weights sum to n;
+the Gaussian loss is n log(SSEw/n). Kish effective size measures concentration
+of those weights, not design leverage or regression degrees of freedom. The
+strict guard requires non-intercept support < bounded Kish size. It does not
+apply to the historical loss-only wSSE selector, which can approach interpolation.
+
+Support counts are a complexity proxy. They can overstate conditional degrees
+of freedom for elastic net or collinear designs and omit the additional search
+complexity of forward selection. wBIC can penalize less than wAIC when the
+bounded Kish size is below exp(2). The current choices are retained; a small
+stabilization pilot is not evidence for a universally better penalty.
+
+The repeated-CV `1se` rule uses the standard error across all fold losses,
+dividing by the square root of folds times repeats. Folds and repeats share
+observations, so this is a selection convention, not an independent-sample
+uncertainty estimate. More repeats can move this rule toward the minimum-error
+choice. The reported tuning CV score is not an unbiased test-set performance
+estimate.
+
+Member-percentile intervals describe ensemble spread. The optional prediction
+interval combines that spread with a validation-residual scale and a support
+based degrees-of-freedom approximation. Its coverage has not been calibrated;
+the residual scale is not multiplied by the optional debiasing slope. These
+summaries do not by themselves establish confidence or prediction coverage.

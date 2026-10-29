@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "svemnet"
-version = "0.6.1"
+version = "0.7.0"
 description = "Self-Validated Ensemble Models (SVEM) for small-sample design-of-experiments regression: SVEM lasso / elastic net and SVEM forward selection with validation-weighted information criteria."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -59,6 +59,12 @@ test = [
   "pandas>=2.0",
 ]
 
+dev = [
+  "build>=1.2",
+  "twine>=6",
+  "hatchling>=1.27",
+]
+
 [project.scripts]
 svem-screening = "svemnet.screening_app:main"
 svem-lasso = "svemnet.lasso_app:main"
@@ -77,8 +83,13 @@ Issues = "https://github.com/akarl46556/svemnet-python/issues"
 packages = ["src/svemnet"]
 
 [tool.hatch.build.targets.sdist]
-# Internal agent/maintainer files stay out of the published sdist
-exclude = ["AGENTS.md", "CLAUDE.md", "validation/output"]
+# An allowlist prevents private reviews, prototypes and scratch from shipping.
+only-include = [
+  "src/svemnet", "tests", "examples", "README.md", "CHANGELOG.md",
+  "LICENSE", "CITATION.cff", "pyproject.toml", "RELEASING.md",
+  "validation/run_r_reference.R", "validation/compare_python.py",
+  "tools/check_distribution.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

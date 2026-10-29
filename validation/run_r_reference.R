@@ -1,6 +1,7 @@
 # Generate R SVEMnet reference results for cross-validating the Python package.
-# Run with the SVEMnet R package (>= 3.5.0) installed, e.g.:
+# Run with the SVEMnet R package (>= 3.6.3) installed, e.g.:
 #   Rscript validation/run_r_reference.R <output_dir>
+# For a source checkout before installation, set SVEMNET_R_SOURCE explicitly.
 # Writes designs, responses, groups, RNG uniforms, and fitted results as
 # plain CSVs with 17 significant digits.
 
@@ -8,8 +9,16 @@ args <- commandArgs(trailingOnly = TRUE)
 out_dir <- if (length(args)) args[[1]] else file.path("validation", "output")
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-library(SVEMnet)
-stopifnot(packageVersion("SVEMnet") >= "3.5.0")
+source_root <- Sys.getenv("SVEMNET_R_SOURCE", "")
+if (nzchar(source_root)) {
+  source_root <- normalizePath(source_root, mustWork = TRUE)
+  for (file in list.files(file.path(source_root, "R"), pattern = "[.]R$", full.names = TRUE)) source(file)
+  svemnet_version <- read.dcf(file.path(source_root, "DESCRIPTION"), fields = "Version")[[1L]]
+} else {
+  library(SVEMnet)
+  svemnet_version <- as.character(packageVersion("SVEMnet"))
+}
+stopifnot(utils::compareVersion(svemnet_version, "3.6.3") >= 0L)
 
 fmt <- function(x) format(x, digits = 17, scientific = TRUE, trim = TRUE)
 
@@ -149,6 +158,32 @@ export_forward_aicc("d3", f3, d3)
 export_svem_forward_identity("d3", f3, d3)
 export_svem_forward_seeded("d3", f3, d3, seed = 505, nBoot = 30)
 
+
+## ---- Numerical edge fixtures: shared weights, no solver approximation ------
+set.seed(917)
+edge_x <- as.data.frame(matrix(rnorm(20L * 5L), 20L, 5L))
+names(edge_x) <- paste0("X", 1:5)
+edge_signal <- 2 + 1.5 * edge_x$X1 - 0.5 * edge_x$X2
+edge_noisy <- edge_signal + rnorm(20L, 0, 0.5)
+edge_responses <- list(constant = rep(12345.678, 20L), exact_linear = edge_signal,
+                       noisy = edge_noisy, tiny = edge_noisy * 1e-10)
+for (case in names(edge_responses)) {
+  tag <- paste0("edge_", case)
+  edge_data <- edge_x
+  edge_data$y <- edge_responses[[case]]
+  edge_formula <- y ~ X1 + X2 + X3 + X4 + X5
+  export_design(tag, edge_formula, edge_data)
+  set.seed(918)
+  U <- matrix(runif(8L * 20L), nrow = 8L, byrow = TRUE)
+  write_matrix(U, file.path(out_dir, paste0(tag, "_U.csv")))
+  for (objective in c("wAIC", "wSSE")) {
+    set.seed(918)
+    fit <- svem_forward(edge_formula, edge_data, nBoot = 8L, objective = objective)
+    write_matrix(fit$coef_matrix, file.path(out_dir, paste0(tag, "_", objective, "_coef.csv")))
+    write_vector(fit$best_ks, file.path(out_dir, paste0(tag, "_", objective, "_k.csv")))
+  }
+}
+
 cat("R reference export complete:", out_dir, "\n")
-cat("SVEMnet version:", as.character(packageVersion("SVEMnet")), "\n")
+cat("SVEMnet version:", svemnet_version, "\n")
 cat("R version:", R.version.string, "\n")

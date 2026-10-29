@@ -1,67 +1,54 @@
-# Release checklist (for Andrew)
+# Maintainer release checklist
 
-One-time setup, then each release is just a git tag.
+The repository is https://github.com/akarl46556/svemnet-python. Its existing
+`release.yml` workflow publishes tags through PyPI trusted publishing using the
+`pypi` GitHub environment; normal releases do not need a stored PyPI API token.
+CI tests Python 3.10–3.13 on Linux and Python 3.13 on Windows/macOS. The monthly
+canary also checks current dependencies.
 
-## One-time setup
+## Prepare and verify
 
-1. **Create the GitHub repository** (suggested name: `svemnet-python`, owner:
-   your GitHub account). Then the URLs below already point at `akarl46556`:
-   - `pyproject.toml` (`[project.urls]`)
-   - `CITATION.cff` (`repository-code`)
-2. **Push this repo**:
-   ```bash
-   git remote add origin https://github.com/akarl46556/svemnet-python.git
-   git push -u origin main
-   ```
-   CI (`.github/workflows/ci.yml`) runs the test suite on Python 3.10–3.13
-   (Linux) and 3.13 (Windows/macOS) on every push to `main` and on every pull
-   request, plus a monthly cron canary against the latest
-   numpy/scikit-learn.
-3. **PyPI trusted publisher** (no API tokens needed):
-   - Create/log into your account on https://pypi.org.
-   - Go to *Your projects → Publishing → Add a new pending publisher* and
-     register: project name `svemnet`, owner `akarl46556`, repository
-     `svemnet-python`, workflow `release.yml`, environment `pypi`.
-   - In the GitHub repo: *Settings → Environments → New environment* named
-     `pypi` (optionally require your review before deployments).
-4. **Cross-link from the R package** (optional but recommended): add a line
-   to the CRAN SVEMnet DESCRIPTION/README pointing to
-   `https://pypi.org/project/svemnet/`.
+Use the declared project interpreter and machine-profile shared caches. Bump
+both `pyproject.toml` and `src/svemnet/__init__.py`, update `CHANGELOG.md`, then:
 
-## Each release
-
-```bash
-# bump version in pyproject.toml and src/svemnet/__init__.py, commit, then
-# replace X.Y.Z below with that version:
-git tag vX.Y.Z
-git push origin vX.Y.Z
+```text
+python -m pytest tests -q
+python -m build --outdir ABSOLUTE_DIST_DIR
+python -m twine check ABSOLUTE_DIST_DIR/*
+python tools/check_distribution.py ABSOLUTE_DIST_DIR
 ```
 
-The `release.yml` workflow builds the sdist/wheel and publishes to PyPI via
-trusted publishing.
+Use a fresh profile-workspace scratch directory per candidate. The `[test,dev]`
+extras provide development dependencies; no separate environment per worktree
+is needed. Confirm source/version metadata, installation from the built wheel,
+and the sdist/wheel file boundaries. Private reviews, diagnostics and the sole
+unfinished JMP prototype are excluded by the sdist allowlist.
 
-## Re-running the R cross-validation
+For numerical changes, generate references with the corresponding checked R
+package and run the Python comparison using one explicit output directory:
 
-With the SVEMnet R package (>= 3.5.0) installed:
-
-```bash
-Rscript validation/run_r_reference.R validation/output
-python validation/compare_python.py validation/output
+```text
+Rscript validation/run_r_reference.R ABSOLUTE_PARITY_DIR
+python validation/compare_python.py ABSOLUTE_PARITY_DIR
 ```
 
-Tier 1 (deterministic forward selection) and Tier 2 (SVEM forward with
-injected FRW uniforms) must match R exactly; Tier 3 (lasso, cross-solver)
-is statistical. See `validation/output/VALIDATION_REPORT.md`.
+The current harness requires R SVEMnet 3.6.3 or later. Tier 1 deterministic
+forward and Tier 2 shared-weight forward compare numerically; Tier 3 lasso is a
+statistical cross-solver comparison. Constant, exact-linear and tiny-response
+fixtures exercise safeguards that ordinary noisy examples do not.
 
-## Later milestones (optional, low urgency)
+## Publish when authorized
 
-- **conda-forge** (once the API feels stable): submit a grayskull-generated
-  recipe to conda-forge/staged-recipes; afterwards maintenance is merging
-  autotick-bot PRs.
-- **JOSS paper** (6–12 months out): JOSS requires ~6 months of public
-  development history and demonstrated reuse; a JOSS DOI gives Python users
-  a natural citation target.
-- **Scope guard**: the package is deliberately minimal (Gaussian; lasso/enet
-  + forward SVEM; prediction with bootstrap uncertainty). Point requests for
-  binomial, whole-model testing, optimization, etc. at the R package rather
-  than growing this one.
+Commit the reviewed source and wait for CI, then create and push the matching
+`vX.Y.Z` tag. The release workflow repeats tests, verifies the tag against both
+source version declarations, builds, runs twine and audits archive boundaries
+before its publish job. Verify the workflow result and the actual PyPI files
+and hashes. Local validation alone is not authorization to publish.
+
+The owner submits the separate R package manually to CRAN.
+
+## Optional future work
+
+Conda-forge remains deferred. The Python package stays focused on Gaussian
+SVEM and base CV workflows; the R package supplies binomial fitting, relaxation,
+whole-model testing and multi-response optimization.

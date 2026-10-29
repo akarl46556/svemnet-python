@@ -26,7 +26,7 @@ def test_screening_defaults_are_200_members_centered_no_nulls_and_all_cpus():
     assert signature.parameters["n_null_vectors"].default == 0
     assert signature.parameters["n_jobs"].default == -1
     assert signature.parameters["method"].default == "forward"
-    assert signature.parameters["alphas"].default == (1.0,)
+    assert signature.parameters["alphas"].default is None
     args = build_parser().parse_args(
         ["run", "data.csv", "--response", "y", "--factors", "x"]
     )

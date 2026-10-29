@@ -41,9 +41,12 @@ from .core import (
     _SUPPORTED_OBJECTIVES,
     _SUPPORTED_WEIGHT_SCHEMES,
     _has_variation,
+    _calibration_resolvable,
+    _numerically_constant_columns,
     _intercept_only_coefficients,
     _linear_calibration,
     _validate_positive_int,
+    _validate_seed,
     _validate_weight_uniforms,
     _validate_xy,
     _feature_names,
@@ -572,6 +575,13 @@ def _grow_forward_path(
     path_points: list[tuple[int, ...]] = [tuple(path_indices)]
     path_point_groups: list[tuple[str, ...]] = [tuple(selected)]
     admissibility_truncated = False
+    intercept = x_weighted[:, 0]
+    fit0 = float(np.dot(intercept, y_weighted) / np.dot(intercept, intercept))
+    residual0 = y_weighted - intercept * fit0
+    rss0 = float(np.dot(residual0, residual0))
+    tiny = float(np.finfo(float).tiny)
+    dust = max(1e-12 * max(rss0, tiny),
+               1e-12 * np.finfo(float).eps * max(float(np.dot(y_weighted, y_weighted)), tiny))
 
     while remaining:
         if k_slope_ceiling is not None and (len(path_indices) - 1) >= k_slope_ceiling:
@@ -580,6 +590,8 @@ def _grow_forward_path(
             admissibility_truncated = True
             break
         evaluator = _QRStepEvaluator(x_weighted, y_weighted, path_indices)
+        if evaluator._rss_current <= dust:
+            break
         best_index: int | None = None
         best_rss: float | None = None
         for gi, (_, cols) in enumerate(remaining):
@@ -626,6 +638,13 @@ def _fit_one_bootstrap(
     n, n_columns = x.shape
     n_eff_raw, n_eff_adm = kish_effective_n(w_valid, n=n)
 
+    if not groups or np.ptp(y) == 0:
+        return _BootstrapFit(
+            coefficients=_intercept_only_coefficients(y, w_train, n_columns - 1),
+            selected_terms=(), selected_k=1, fallback=False,
+            n_eff_raw=float(n_eff_raw), n_eff_adm=float(n_eff_adm),
+            path_length=1, admissibility_truncated=False,
+        )
     sqrt_w = np.sqrt(w_train)
     x_weighted = x * sqrt_w[:, None]
     y_weighted = y * sqrt_w
@@ -708,7 +727,8 @@ def fit_svem_forward(
     (unweighted) rows through the shared wSSE/wAIC/wBIC kernel; the first
     path-point minimum wins. For ``"wAIC"``/``"wBIC"``, path growth stops at
     the Kish admissible-effective-sample-size ceiling (all further points
-    would be inadmissible); ``"wSSE"`` paths are never truncated. Bootstraps
+    would be inadmissible); ``"wSSE"`` has no support ceiling. All paths
+    stop when training residuals reach the shared numerical noise floor. Bootstraps
     with no admissible finite path point fall back to a weighted
     intercept-only model.
 
@@ -732,14 +752,19 @@ def fit_svem_forward(
         )
     names = _feature_names(feature_names, p)
     group_list = _normalize_groups(groups, p, names)
+    constant_mask = _numerically_constant_columns(X_arr)
+    structural_intercept_only = p == 0 or bool(np.all(constant_mask)) or np.ptp(y_arr) == 0
     shifted_groups = tuple(
         (name, tuple(c + 1 for c in cols)) for name, cols in group_list
     )
+    if structural_intercept_only:
+        shifted_groups = ()
     uniform_matrix = _validate_weight_uniforms(
         weight_uniforms, nBoot=nBoot_int, n=n
     )
 
     x = np.column_stack([np.ones(n), X_arr])
+    seed = _validate_seed(seed)
     rng = np.random.default_rng(seed)
 
     boot_fits: list[_BootstrapFit] = []
@@ -822,7 +847,8 @@ def fit_svem_forward(
     debias_params: tuple[float, float] | None = None
     debiased_coefficients: np.ndarray | None = None
     debiased_predictions: np.ndarray | None = None
-    if coef_matrix.shape[0] >= 10 and _has_variation(raw_predictions):
+    calibration_resolvable = _calibration_resolvable(raw_predictions, X_arr, raw_coefficients)
+    if coef_matrix.shape[0] >= 10 and calibration_resolvable:
         a, b = _linear_calibration(raw_predictions, y_arr)
         if np.isfinite(a) and np.isfinite(b):
             debias_params = (float(a), float(b))
@@ -855,6 +881,9 @@ def fit_svem_forward(
     )
 
     diagnostics: dict[str, object] = {
+        "numerically_constant_columns": tuple(name for name, flag in zip(names, constant_mask) if flag),
+        "structural_intercept_only": bool(structural_intercept_only),
+        "calibration_resolvable": calibration_resolvable,
         "k_summary": {
             "k_median": float(np.median(selected_k)),
             "k_iqr": float(

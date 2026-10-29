@@ -132,7 +132,7 @@ class TestFormulaSvem:
     def test_unobserved_category_level_dropped_with_warning(self):
         df = _toy_df(factor=True)
         df["F"] = pd.Categorical(df["F"], categories=["a", "b", "c", "zz"])
-        with pytest.warns(UserWarning, match="all-zero"):
+        with pytest.warns(UserWarning, match="Removed unobserved"):
             model = svemnet.svem("y ~ X1 + X2 + F", df, method="forward",
                                  nBoot=10, seed=3)
         # The observed levels remain selectable as a group

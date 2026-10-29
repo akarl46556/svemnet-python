@@ -24,7 +24,10 @@ default path does not create a worker pool.
 from __future__ import annotations
 
 import importlib
+import inspect
+from collections import Counter
 from dataclasses import dataclass
+from numbers import Integral, Real
 from typing import Iterable, Mapping, Sequence
 import warnings
 
@@ -165,7 +168,7 @@ def fit_svem(
     lambda_min_ratio: float | None = None,
     solver_tol: float = 1.0e-7,
     max_iter: int = 100000,
-    coef_tol: float = 1.0e-7,
+    coef_tol: float = 0.0,
     debias: bool = False,
     feature_names: Sequence[str] | None = None,
     weight_uniforms: Sequence[Sequence[float]] | np.ndarray | None = None,
@@ -207,10 +210,10 @@ def fit_svem(
     solver_tol, max_iter:
         Coordinate-descent controls passed to scikit-learn's path solver.
     coef_tol:
-        Base tolerance for selected support size. Slopes are counted when
-        ``abs(beta_j) > coef_tol * max(1, max_abs_slope_for_path_point)``;
-        the intercept is counted structurally as one parameter, matching the
-        current R implementation.
+        Support uses exact nonzero slopes by default (0.0). An explicitly
+        positive value retains the historical raw-coefficient rule:
+        ``abs(beta_j) > coef_tol * max(1, max_abs_slope_for_path_point)``.
+        The intercept is counted structurally as one parameter.
     debias:
         If true and eligible, return calibrated coefficients and predictions.
         Raw and calibrated coefficients are both stored in the result.
@@ -243,22 +246,27 @@ def fit_svem(
     alpha_values = _validate_alpha(alpha)
     if solver_tol <= 0 or not np.isfinite(solver_tol):
         raise ValueError("solver_tol must be positive and finite")
-    if max_iter < 1 or not np.isfinite(max_iter):
-        raise ValueError("max_iter must be a positive integer")
-    max_iter_int = int(max_iter)
-    if coef_tol <= 0 or not np.isfinite(coef_tol):
-        raise ValueError("coef_tol must be positive and finite")
+    max_iter_int = _validate_positive_int(max_iter, "max_iter")
+    if not isinstance(coef_tol, Real) or isinstance(coef_tol, (bool, np.bool_)) or not np.isfinite(coef_tol) or coef_tol < 0:
+        raise ValueError("coef_tol must be nonnegative and finite")
     if lambda_min_ratio is None:
         lambda_min_ratio = 1.0e-4 if n > p else 1.0e-2
     if not (0 < lambda_min_ratio < 1) or not np.isfinite(lambda_min_ratio):
         raise ValueError("lambda_min_ratio must be in (0, 1)")
     names = _feature_names(feature_names, p)
+    constant_mask = _numerically_constant_columns(X_arr)
+    X_fit = X_arr
+    if np.any(constant_mask):
+        X_fit = X_arr.copy()
+        X_fit[:, constant_mask] = 0.0
+    structural_intercept_only = p == 0 or bool(np.all(constant_mask)) or np.ptp(y_arr) == 0
     uniform_matrix = _validate_weight_uniforms(
         weight_uniforms,
         nBoot=nBoot_int,
         n=n,
     )
 
+    seed = _validate_seed(seed)
     rng = np.random.default_rng(seed)
     bootstrap_settings = _ElasticBootstrapSettings(
         alpha_values=alpha_values,
@@ -268,6 +276,7 @@ def fit_svem(
         solver_tol=float(solver_tol),
         max_iter=max_iter_int,
         coef_tol=float(coef_tol),
+        structural_intercept_only=structural_intercept_only,
     )
 
     if parallel_config.serial:
@@ -285,7 +294,7 @@ def fit_svem(
             boot_fits.append(
                 _fit_one_elastic_bootstrap(
                     boot_index,
-                    X_arr,
+                    X_fit,
                     y_arr,
                     w_train,
                     w_valid,
@@ -308,7 +317,7 @@ def fit_svem(
             tasks.append(
                 (
                     boot_index,
-                    X_arr,
+                    X_fit,
                     y_arr,
                     w_train,
                     w_valid,
@@ -329,7 +338,19 @@ def fit_svem(
     n_eff_raw_values = [fit.n_eff_raw for fit in boot_fits]
     n_eff_adm_values = [fit.n_eff_adm for fit in boot_fits]
     valid_sse_values = [fit.valid_sse for fit in boot_fits]
-    warning_messages = [message for fit in boot_fits for message in fit.warnings]
+    warning_counts = Counter(message for fit in boot_fits for message in fit.warnings)
+    warning_messages = list(warning_counts)
+    path_failure_count = sum(fit.path_failures for fit in boot_fits)
+    failed_members = sum(fit.fallback and fit.path_failures > 0 for fit in boot_fits)
+    if failed_members == nBoot_int:
+        detail = warning_messages[0] if warning_messages else "no usable solver path"
+        raise RuntimeError(f"Every bootstrap member failed to fit a solver path: {detail}")
+    if path_failure_count:
+        warnings.warn(
+            f"{path_failure_count} elastic-net path(s) failed; {failed_members} bootstrap "
+            "member(s) used an intercept-only fallback. See diagnostics for details.",
+            RuntimeWarning, stacklevel=2,
+        )
 
     coef_matrix = np.vstack(coef_rows) if coef_rows else np.empty((0, p + 1))
     finite_rows = np.all(np.isfinite(coef_matrix), axis=1)
@@ -363,7 +384,8 @@ def fit_svem(
     debias_params: tuple[float, float] | None = None
     debiased_coefficients: np.ndarray | None = None
     debiased_predictions: np.ndarray | None = None
-    if coef_matrix.shape[0] >= 10 and _has_variation(raw_predictions):
+    calibration_resolvable = _calibration_resolvable(raw_predictions, X_arr, raw_coefficients)
+    if coef_matrix.shape[0] >= 10 and calibration_resolvable:
         a, b = _linear_calibration(raw_predictions, y_arr)
         if np.isfinite(a) and np.isfinite(b):
             debias_params = (float(a), float(b))
@@ -399,6 +421,14 @@ def fit_svem(
         debias_eligible=debiased_coefficients is not None,
         debias_applied=use_debiased,
     )
+
+    diagnostics["numerically_constant_columns"] = tuple(name for name, flag in zip(names, constant_mask) if flag)
+    diagnostics["structural_intercept_only"] = bool(structural_intercept_only)
+    diagnostics["support_rule"] = "exact_nonzero" if coef_tol == 0 else "historical_raw_coefficient_tolerance"
+    diagnostics["calibration_resolvable"] = calibration_resolvable
+    diagnostics["path_failure_count"] = int(path_failure_count)
+    diagnostics["path_failure_member_count"] = int(failed_members)
+    diagnostics["warning_counts"] = dict(warning_counts)
 
     return SVEMGaussianResult(
         coefficients=coefficients,
@@ -579,14 +609,17 @@ def kish_effective_n(
 def support_size(
     coef_path: np.ndarray,
     *,
-    base_tol: float = 1.0e-7,
+    base_tol: float = 0.0,
 ) -> np.ndarray:
     """Count selected coefficients for each path point.
 
     The intercept is counted structurally as one coefficient. Slope support is
-    counted with the relative/absolute tolerance used in the R implementation.
+    exact by default; an explicit positive base_tol retains the historical
+    raw-unit relative/absolute tolerance.
     """
 
+    if not isinstance(base_tol, Real) or isinstance(base_tol, (bool, np.bool_)) or not np.isfinite(base_tol) or base_tol < 0:
+        raise ValueError("base_tol must be nonnegative and finite")
     coefs = np.asarray(coef_path, dtype=float)
     if coefs.ndim == 1:
         coefs = coefs[:, None]
@@ -625,10 +658,10 @@ def weighted_ic_scores(
         raise ValueError("sse_w and k must have the same shape")
     if n_like <= 0 or not np.isfinite(n_like):
         raise ValueError("n_like must be positive and finite")
-    sse_adj = np.maximum(sse, _FLOAT_EPS)
-    sse_adj = np.where(np.isfinite(sse_adj), sse_adj, np.inf)
+    finite_sse = np.where(np.isfinite(sse), sse, np.inf)
     if objective == "wSSE":
-        return sse_adj
+        return finite_sse
+    sse_adj = np.maximum(finite_sse, np.finfo(float).tiny)
 
     k_slope = np.maximum(kval - 1, 0)
     admissible = k_slope < float(n_eff_adm)
@@ -642,6 +675,14 @@ def weighted_ic_scores(
     return out
 
 
+def _enet_path_grid_args(path_function, nlambda: int) -> dict[str, int]:
+    """Use the installed solver's explicit path-length parameter."""
+    parameter = inspect.signature(path_function).parameters.get("n_alphas")
+    if parameter is None or parameter.default == "deprecated":
+        return {"alphas": int(nlambda)}
+    return {"n_alphas": int(nlambda)}
+
+
 def _weighted_enet_path(
     X: np.ndarray,
     y: np.ndarray,
@@ -652,12 +693,12 @@ def _weighted_enet_path(
     lambda_min_ratio: float,
     solver_tol: float,
     max_iter: int,
-) -> tuple[np.ndarray, np.ndarray, list[str]] | None:
+) -> tuple[np.ndarray | None, np.ndarray | None, list[str]]:
     if X.shape[1] == 0:
-        return None
+        return None, None, ["path fit unavailable: no predictor columns"]
     sum_w = float(np.sum(w))
     if sum_w <= 0.0 or not np.isfinite(sum_w):
-        return None
+        return None, None, ["path fit failed: training weights have no positive finite total"]
     x_mean = (w @ X) / sum_w
     y_mean = float(w @ y / sum_w)
     X_centered = X - x_mean
@@ -671,6 +712,8 @@ def _weighted_enet_path(
     y_weighted = y_centered * sqrt_w
 
     path_warnings: list[str] = []
+    failure = None
+    caught = []
     try:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", ConvergenceWarning)
@@ -679,21 +722,24 @@ def _weighted_enet_path(
                 y_weighted,
                 l1_ratio=float(l1_ratio),
                 eps=float(lambda_min_ratio),
-                n_alphas=int(nlambda),
+                **_enet_path_grid_args(enet_path, nlambda),
                 copy_X=True,
                 check_input=True,
                 max_iter=int(max_iter),
                 tol=float(solver_tol),
             )
-        for item in caught:
-            if issubclass(item.category, ConvergenceWarning):
-                path_warnings.append(str(item.message))
-    except Exception as exc:  # sklearn raises ValueError on degenerate paths
-        path_warnings.append(f"path fit failed: {exc}")
-        return None
+    except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
+        failure = f"path fit failed: {type(exc).__name__}: {exc}"
+    for item in caught:
+        path_warnings.append(f"{item.category.__name__}: {item.message}")
+        if not issubclass(item.category, ConvergenceWarning):
+            warnings.warn_explicit(item.message, item.category, item.filename, item.lineno)
+    if failure is not None:
+        path_warnings.append(failure)
+        return None, None, path_warnings
 
     if coefs_standard.ndim != 2 or coefs_standard.shape[0] != X.shape[1]:
-        return None
+        raise RuntimeError("elastic-net solver returned an invalid coefficient-path shape")
     slopes = coefs_standard / scale[:, None]
     intercepts = y_mean - x_mean @ slopes
     coef_path = np.vstack([intercepts[None, :], slopes])
@@ -709,6 +755,7 @@ class _ElasticBootstrapSettings:
     solver_tol: float
     max_iter: int
     coef_tol: float
+    structural_intercept_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -722,6 +769,7 @@ class _ElasticBootstrapFit:
     n_eff_adm: float
     valid_sse: float
     warnings: tuple[str, ...]
+    path_failures: int
 
 
 def _fit_one_elastic_bootstrap(
@@ -740,6 +788,7 @@ def _fit_one_elastic_bootstrap(
     n, p = X.shape
     n_eff_raw, n_eff_adm = kish_effective_n(w_valid, n=n)
     warning_messages: list[str] = []
+    path_failures = 0
 
     best_score = np.inf
     best_alpha = np.nan
@@ -748,9 +797,9 @@ def _fit_one_elastic_bootstrap(
     best_k = 1
     best_valid_sse = np.nan
 
-    if p > 0:
+    if p > 0 and not settings.structural_intercept_only:
         for l1_ratio in settings.alpha_values:
-            path = _weighted_enet_path(
+            lambdas, coef_path, path_warnings = _weighted_enet_path(
                 X,
                 y,
                 w_train,
@@ -760,14 +809,15 @@ def _fit_one_elastic_bootstrap(
                 solver_tol=settings.solver_tol,
                 max_iter=settings.max_iter,
             )
-            if path is None:
-                continue
-            lambdas, coef_path, path_warnings = path
             warning_messages.extend(
-                f"bootstrap {boot_index + 1}, alpha {l1_ratio:g}: {msg}"
-                for msg in path_warnings
+                f"alpha {l1_ratio:g}: {msg}" for msg in path_warnings
             )
+            if coef_path is None:
+                path_failures += 1
+                continue
             if coef_path.size == 0:
+                path_failures += 1
+                warning_messages.append(f"alpha {l1_ratio:g}: solver returned an empty path")
                 continue
 
             pred_path = X @ coef_path[1:, :] + coef_path[0:1, :]
@@ -808,30 +858,69 @@ def _fit_one_elastic_bootstrap(
         selected_alpha=float(best_alpha),
         selected_lambda=float(best_lambda),
         selected_k=int(best_k),
-        fallback=bool(fallback),
+        fallback=bool(fallback and not settings.structural_intercept_only),
         n_eff_raw=float(n_eff_raw),
         n_eff_adm=float(n_eff_adm),
         valid_sse=float(best_valid_sse),
         warnings=tuple(warning_messages),
+        path_failures=path_failures,
     )
 
 
 def _intercept_only_coefficients(y: np.ndarray, weights: np.ndarray, p: int) -> np.ndarray:
     coef = np.zeros(p + 1, dtype=float)
-    coef[0] = float(np.sum(weights * y) / np.sum(weights))
+    coef[0] = float(y[0]) if np.ptp(y) == 0 else float(np.sum(weights * y) / np.sum(weights))
     return coef
+
+
+def _numerically_constant_columns(X: np.ndarray) -> np.ndarray:
+    """Unweighted two-pass variance bound used by sklearn StandardScaler.
+
+    Evaluate once on a training design; preserve its columns and mask their
+    fitted coefficients instead of amplifying indistinguishable variation.
+    """
+    n = X.shape[0]
+    mean = np.mean(X, axis=0)
+    variance = np.mean((X - mean) ** 2, axis=0)
+    eps = np.finfo(float).eps
+    upper_bound = n * eps * variance + (n * eps * np.abs(mean)) ** 2
+    return variance <= upper_bound
+
+
+def _calibration_resolvable(yhat: np.ndarray, X: np.ndarray, coefficients: np.ndarray) -> bool:
+    """Is prediction spread larger than its dot-product rounding bound?"""
+    if not _has_variation(yhat):
+        return False
+    m_eps = len(coefficients) * np.finfo(float).eps
+    gamma = m_eps / (1.0 - m_eps)
+    origin = np.abs(coefficients[0]) + np.abs(X) @ np.abs(coefficients[1:])
+    bound = 2.0 * gamma * float(np.max(origin))
+    spread = float(np.max(np.abs(yhat - np.mean(yhat))))
+    return bool(np.isfinite(bound) and spread > bound)
 
 
 def _linear_calibration(yhat: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     design = np.column_stack([np.ones_like(yhat, dtype=float), yhat])
-    coef, _, _, _ = np.linalg.lstsq(design, y, rcond=None)
-    return float(coef[0]), float(coef[1])
+    coef, _, rank, _ = np.linalg.lstsq(design, y, rcond=None)
+    if rank == 2 and np.all(np.isfinite(coef)):
+        return float(coef[0]), float(coef[1])
+    # A large prediction origin can make the intercept and slope numerically
+    # collinear. Solve the same affine regression after centering and scaling.
+    center = float(np.mean(yhat))
+    response_center = float(np.mean(y))
+    centered = yhat - center
+    scale = float(np.max(np.abs(centered)))
+    if not np.isfinite(scale) or scale <= 0.0:
+        return response_center, 0.0
+    z = centered / scale
+    slope = float(np.dot(z, y - response_center) / np.dot(z, z)) / scale
+    return response_center - slope * center, slope
 
 
 def _has_variation(x: np.ndarray) -> bool:
     if x.size < 2:
         return False
-    return bool(np.isfinite(x).all() and np.var(x, ddof=1) > 0.0)
+    return bool(np.isfinite(x).all() and np.ptp(x) > 0.0)
 
 
 def _diagnostics(
@@ -966,12 +1055,22 @@ def _validate_X_new(X: Sequence[Sequence[float]] | np.ndarray, p: int) -> np.nda
 
 
 def _validate_positive_int(value: int, name: str) -> int:
-    if not np.isscalar(value) or not np.isfinite(value):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a positive integer")
+    if not np.isfinite(value):
         raise ValueError(f"{name} must be a positive integer")
     out = int(value)
-    if out < 1 or float(out) != float(value):
+    if out < 1 or out != value:
         raise ValueError(f"{name} must be a positive integer")
     return out
+
+
+def _validate_seed(seed: int | None) -> int | None:
+    if seed is None:
+        return None
+    if isinstance(seed, (bool, np.bool_)) or not isinstance(seed, Integral) or seed < 0:
+        raise ValueError("seed must be None or a nonnegative integer")
+    return int(seed)
 
 
 def _validate_alpha(alpha: Sequence[float] | float) -> np.ndarray:

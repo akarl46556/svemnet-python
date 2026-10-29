@@ -150,6 +150,30 @@ def compare_lasso(tag: str) -> None:
     )
 
 
+def compare_numerical_edges() -> None:
+    for case in ("constant", "exact_linear", "noisy", "tiny"):
+        tag = f"edge_{case}"
+        X, names = load_matrix(OUT / f"{tag}_X.csv")
+        y = load_vector(OUT / f"{tag}_y.csv")
+        U, _ = load_matrix(OUT / f"{tag}_U.csv")
+        normalization = 1e-10 if case == "tiny" else 1.0
+        for objective in ("wAIC", "wSSE"):
+            r_coef, _ = load_matrix(OUT / f"{tag}_{objective}_coef.csv")
+            r_k = load_vector(OUT / f"{tag}_{objective}_k.csv").astype(int)
+            py = fit_svem_forward(X, y, nBoot=len(U), objective=objective,
+                                  weight_uniforms=U, feature_names=names)
+            error = float(np.max(np.abs(py.coef_matrix-r_coef))) / normalization
+            check(f"{tag}/{objective}: selected sizes match R",
+                  np.array_equal(py.selected_k, r_k),
+                  f"py={py.selected_k.tolist()} r={r_k.tolist()}")
+            check(f"{tag}/{objective}: normalized member coefficients match R",
+                  error < 1e-7, f"max normalized abs diff = {error:.3e}")
+            if case in ("constant", "exact_linear"):
+                expected = 1 if case == "constant" else 3
+                check(f"{tag}/{objective}: no rounding-noise terms selected",
+                      bool(np.all(py.selected_k == expected)))
+
+
 def main() -> int:
     report.append("# svemnet (Python) vs SVEMnet (R) validation report\n")
     report.append(
@@ -167,6 +191,9 @@ def main() -> int:
     for tag in ("d1", "d2", "d3"):
         compare_forward_identity(tag)
         compare_forward_seeded(tag)
+
+    report.append("\n## Numerical edge fixtures (exact given weights)\n")
+    compare_numerical_edges()
 
     report.append("\n## Tier 3: SVEM lasso (statistical)\n")
     compare_lasso("d1")

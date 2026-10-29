@@ -6,12 +6,15 @@ import csv
 import hashlib
 import io
 import os
+import shutil
 import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+from .csvio import parse_csv_payload
 
 
 class PredictionMixin:
@@ -34,23 +37,43 @@ class PredictionMixin:
             source[name] = self.design.null_values[:, index]
         return self.predict(source)
 
-    def save_predictions_csv(self, snapshot, *, column_name=None):
-        """Append predictions only to the unchanged CSV snapshot used for fitting."""
-        if not snapshot.data.equals(self.design.source_data):
-            raise ValueError("CSV snapshot is not the data used for this fit")
+    def save_predictions_csv(self, snapshot, *, column_name=None, text_columns=None):
+        """Append only when fitted data matches the pristine, same-policy CSV.
+
+        Pass the same ``text_columns`` used with ``snapshot.frame()`` when
+        fitting. Omission uses the policy chosen at ``CSVSnapshot.load()``.
+        """
+        snapshot._assert_unmodified()
+        expected = snapshot.frame(text_columns=text_columns)
+        if not _same_frame(self.design.source_data, expected):
+            raise ValueError(
+                "CSV snapshot is not the data used for this fit "
+                "(rows, order, values, columns or types differ)"
+            )
         if column_name is None:
             kind = getattr(self, "method", "base model")
             column_name = f"Predicted {self.design.response} ({kind})"
         return snapshot.append_predictions(self.predict_source(), column_name)
 
 
+def _same_frame(actual, expected):
+    return (
+        actual.equals(expected)
+        and actual.index.identical(expected.index)
+        and actual.columns.identical(expected.columns)
+    )
+
+
 @dataclass(frozen=True)
 class CSVSnapshot:
-    """An immutable byte snapshot plus the DataFrame parsed from those bytes.
+    """An immutable byte snapshot plus a convenience DataFrame copy.
 
     Write-back preserves original field text and row order, creates an exact
     byte backup, and replaces the file atomically. Formatting/quoting may be
     normalized by the CSV writer; the original bytes remain in the backup.
+    Export reparses immutable bytes and refuses a mutated convenience frame.
+    Mark categorical columns with ``text_columns`` to retain literal NA-like
+    labels and leading zeros; blank fields always mean missing.
     """
 
     path: Path
@@ -59,41 +82,44 @@ class CSVSnapshot:
     _payload: bytes = field(repr=False)
     _rows: tuple[tuple[str, ...], ...] = field(repr=False)
 
-    @classmethod
-    def load(cls, path):
-        import pandas as pd
+    _text_columns: tuple[str, ...] = field(default=(), repr=False)
 
+    @classmethod
+    def load(cls, path, *, text_columns=()):
         path = Path(path).absolute()
         if path.is_symlink() or not path.is_file():
             raise ValueError("source CSV must be a regular file, not a symbolic link")
         payload = path.read_bytes()
-        text = payload.decode("utf-8-sig")
-        rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
-        if not rows or not rows[0] or any(not name for name in rows[0]):
-            raise ValueError("CSV requires nonempty column names")
-        if len(rows[0]) != len(set(rows[0])):
-            raise ValueError("duplicate CSV column names are not supported")
-        width = len(rows[0])
-        rows = [rows[0], *[(row if row else [""] * width) for row in rows[1:]]]
-        if any(len(row) != width for row in rows):
-            raise ValueError("CSV rows must all have the same number of fields")
-        data = pd.read_csv(
-            io.BytesIO(payload), encoding="utf-8-sig", skip_blank_lines=False
-        )
-        if len(data) != len(rows) - 1 or list(data.columns) != rows[0]:
-            raise ValueError("CSV parser row/header alignment could not be verified")
+        # Materialize once so generators use the same policy on every reparse.
+        if isinstance(text_columns, str):
+            raise ValueError("text_columns must be a sequence of column names")
+        text_columns = tuple(text_columns)
+        rows, data, _ = parse_csv_payload(payload, text_columns=text_columns)
         return cls(
-            path,
-            data,
-            hashlib.sha256(payload).hexdigest(),
-            payload,
-            tuple(tuple(row) for row in rows),
+            path, data, hashlib.sha256(payload).hexdigest(), payload, rows, text_columns
         )
+
+    def frame(self, *, text_columns=None):
+        """Return a fresh frame parsed from immutable bytes, with optional roles."""
+        columns = self._text_columns if text_columns is None else text_columns
+        return parse_csv_payload(self._payload, text_columns=columns)[1]
+
+    def parse_report(self, *, text_columns=None):
+        """Return counts of conventional tokens inferred as numeric missing cells."""
+        columns = self._text_columns if text_columns is None else text_columns
+        return parse_csv_payload(self._payload, text_columns=columns)[2]
+
+    def _assert_unmodified(self):
+        if not _same_frame(self.data, self.frame()):
+            raise ValueError(
+                "CSV snapshot data changed since loading; reload and refit before saving"
+            )
 
     def append_predictions(self, predictions, column_name):
         values = np.asarray(predictions, dtype=float)
-        if values.shape != (len(self.data),) or np.isinf(values).any():
+        if values.shape != (len(self._rows) - 1,) or np.isinf(values).any():
             raise ValueError("predictions must be a row-aligned finite/NaN vector")
+        self._assert_unmodified()
         if not isinstance(column_name, str) or not column_name.strip():
             raise ValueError("prediction column name must be nonempty")
         if self.path.is_symlink() or self.path.read_bytes() != self._payload:
@@ -134,6 +160,8 @@ class CSVSnapshot:
                 handle.write(output)
                 handle.flush()
                 os.fsync(handle.fileno())
+            if os.name == "posix":
+                shutil.copymode(self.path, temporary)
             if self.path.is_symlink() or self.path.read_bytes() != self._payload:
                 raise ValueError(
                     "source CSV changed during export; original was not replaced"

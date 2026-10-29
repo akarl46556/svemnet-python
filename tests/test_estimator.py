@@ -17,11 +17,16 @@ def _toy(n=50, seed=1):
     return X, y
 
 
-@parametrize_with_checks(
+_conformance = parametrize_with_checks(
     [
         SVEMRegressor(n_boot=8, random_state=0),
         SVEMRegressor(method="forward", n_boot=8, random_state=0),
     ]
+)
+
+
+@pytest.mark.parametrize(
+    _conformance.args[0], list(_conformance.args[1]), **_conformance.kwargs
 )
 def test_sklearn_conformance(estimator, check):
     check(estimator)

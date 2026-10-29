@@ -19,14 +19,23 @@ from sklearn.model_selection import RepeatedKFold
 from . import _parallel
 from .core import (
     _feature_names,
+    _numerically_constant_columns,
     _validate_alpha,
     _validate_positive_int,
+    _validate_seed,
     _validate_X_new,
     _validate_xy,
 )
 
 
 def _path(X, y, alpha, lambdas, solver_tol, max_iter):
+    constant_mask = _numerically_constant_columns(X)
+    if np.any(constant_mask):
+        X = X.copy()
+        X[:, constant_mask] = 0.0
+    if np.ptp(y) == 0 or np.all(constant_mask):
+        intercept = float(y[0]) if np.ptp(y) == 0 else float(y.mean())
+        return np.vstack((np.full(len(lambdas), intercept), np.zeros((X.shape[1], len(lambdas))))), ()
     x_mean = X.mean(axis=0)
     scale = X.std(axis=0)
     scale = np.where(scale > 0, scale, 1.0)
@@ -81,6 +90,7 @@ class CVLassoResult:
     seed: int | None
     workers: int
     warnings: tuple[str, ...]
+    numerically_constant_columns: tuple[str, ...] = ()
 
     def predict(self, X) -> np.ndarray:
         matrix = _validate_X_new(X, len(self.feature_names))
@@ -110,9 +120,12 @@ def fit_lasso_cv(
     as in path-based CV; centering/scaling for each fold uses training rows
     only. ``min`` minimizes mean fold MSE. ``1se`` chooses the largest lambda
     within one conventional fold-based SE for the winning mixing alpha.
+    The SE divides the SD of fold losses by sqrt(nfolds * repeats);
+    overlapping training folds mean it is a conventional tuning heuristic.
     CV errors are tuning diagnostics, not independent test-error estimates.
     There is no relaxed-lasso or post-selection refit.
     """
+    seed = _validate_seed(seed)
     X, y = _validate_xy(X, y)
     n, p = X.shape
     if n < 3:
@@ -132,6 +145,11 @@ def fit_lasso_cv(
         raise ValueError("lambda_min_ratio must be in (0, 1)")
     alphas = _validate_alpha(alphas)
     names = _feature_names(feature_names, p)
+    constant_mask = _numerically_constant_columns(X)
+    X_for_grid = X
+    if np.any(constant_mask):
+        X_for_grid = X.copy()
+        X_for_grid[:, constant_mask] = 0.0
     splits = list(
         RepeatedKFold(n_splits=nfolds, n_repeats=repeats, random_state=seed).split(X)
     )
@@ -140,9 +158,9 @@ def fit_lasso_cv(
     for i, (_, valid) in enumerate(splits):
         fold_ids[i // nfolds, valid] = i % nfolds
 
-    scale = X.std(axis=0)
+    scale = X_for_grid.std(axis=0)
     scale = np.where(scale > 0, scale, 1.0)
-    correlations = np.abs(((X - X.mean(axis=0)) / scale).T @ (y - y.mean())) / n
+    correlations = np.abs(((X_for_grid - X_for_grid.mean(axis=0)) / scale).T @ (y - y.mean())) / n
     max_correlation = float(correlations.max()) if p else 0.0
     grids = np.array(
         [
@@ -155,14 +173,17 @@ def fit_lasso_cv(
         ]
     )
     messages = []
-    if p == 0 or np.std(y) == 0:
+    if np.any(constant_mask):
+        messages.append("masked numerically constant design columns: " + ", ".join(name for name, flag in zip(names, constant_mask) if flag))
+    if p == 0 or np.all(constant_mask) or np.ptp(y) == 0:
         fold_mse = np.array(
             [
                 np.full((len(alphas), nlambda), np.mean((y[v] - y[t].mean()) ** 2))
                 for t, v in splits
             ]
         ).transpose(1, 2, 0)
-        coefficients = np.r_[y.mean(), np.zeros(p)]
+        intercept = y[0] if np.ptp(y) == 0 else y.mean()
+        coefficients = np.r_[intercept, np.zeros(p)]
         best_alpha, best_lambda = 0, 0
         effective_workers = 1
     else:
@@ -208,4 +229,5 @@ def fit_lasso_cv(
         seed=seed,
         workers=effective_workers,
         warnings=tuple(dict.fromkeys(messages)),
+        numerically_constant_columns=tuple(name for name, flag in zip(names, constant_mask) if flag),
     )

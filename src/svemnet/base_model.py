@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from .csvio import assert_no_protected_collision, dumps_metadata
 from .lasso import CVLassoResult, fit_lasso_cv
 from .prediction import PredictionMixin
 from .screening import (
@@ -37,10 +37,15 @@ class BaseModelResult(PredictionMixin):
             "formula": self.design.formula,
             "center_polynomials": self.design.center_polynomials,
             "polynomial_centers": self.design.polynomial_centers,
+            "polynomial_snap_bounds": dict(self.design.polynomial_snap_bounds),
             "rows_used": len(self.design.y),
             "rows_dropped": self.design.rows_dropped,
             "null_effects": list(self.design.null_effects),
             "null_vector_seed": self.design.null_seed,
+            "null_rng": (
+                "SeedSequence(seed).spawn(1)[0] -> PCG64.standard_normal"
+                "((source_rows, k)), C order"
+            ),
             "alpha_candidates": self.fit.alphas.tolist(),
             "selected_alpha": self.fit.selected_alpha,
             "selected_lambda": self.fit.selected_lambda,
@@ -52,12 +57,23 @@ class BaseModelResult(PredictionMixin):
             "elapsed_seconds": self.elapsed_seconds,
             "standardized_coefficient": "beta_j * SD(X_j) / SD(y), training expanded columns",
             "relaxed": False,
-            "warnings": list(self.fit.warnings),
+            "numerically_constant_columns": list(self.fit.numerically_constant_columns),
+            "svemnet_version": __import__("svemnet").__version__,
+            "warnings": list(dict.fromkeys((
+                *self.design.warnings, *self.fit.warnings,
+            ))),
             "cv_note": "Tuning scores are not independent test-error estimates.",
         }
 
-    def save(self, output_dir):
+    def save(self, output_dir, *, protected=()):
+        """Save reports after checking every output against protected inputs."""
         output = Path(output_dir)
+        names = (
+            "coefficients.csv", "cv_scores.csv", "run_metadata.json",
+            "standardized_coefficients.png",
+        )
+        assert_no_protected_collision((output / name for name in names), protected)
+        metadata = dumps_metadata(self.metadata())
         output.mkdir(parents=True, exist_ok=True)
         self.coefficient_table.to_csv(output / "coefficients.csv", index=False)
         rows = [
@@ -74,7 +90,7 @@ class BaseModelResult(PredictionMixin):
         ]
         pd.DataFrame(rows).to_csv(output / "cv_scores.csv", index=False)
         (output / "run_metadata.json").write_text(
-            json.dumps(self.metadata(), indent=2), encoding="utf-8"
+            metadata, encoding="utf-8"
         )
         figure = make_coefficient_figure(
             self.coefficient_table, null_effects=self.design.null_effects
