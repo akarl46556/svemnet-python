@@ -324,7 +324,7 @@ def test_gui_fit_carries_original_source_and_literal_role_policy(
     for key, value in {
         "boot": "2", "null_vectors": "0", "seed": "1", "jobs": "1",
         "repeats": "1", "model": "interactions", "center_polynomials": True,
-        "method": "forward", "save_predictions": save_predictions,
+        "method": "forward", "save_predictions": save_predictions, "likelihood": False,
     }.items():
         setattr(app, f"{key}_var", variable(value))
     app.run_button = SimpleNamespace(configure=lambda **_: None)

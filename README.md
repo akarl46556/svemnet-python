@@ -107,8 +107,9 @@ Choose a CSV file, one numeric response, and one or more factors. Text
 columns are treated as categorical automatically; numeric factors can also
 be marked categorical in the third selector. The candidate model is either
 main effects plus all two-way interactions or a response surface (the same
-terms plus squares of continuous factors). The objective is fixed at wAIC,
-the default is 200 bootstrap members, and all available CPUs are used.
+terms plus squares of continuous factors). The default is wAIC with 200
+bootstrap members and all available CPUs. Forward selection also offers
+`--objective gaussian_likelihood` on the CLI and a checkbox in the GUI.
 The default fitter is **SVEM forward selection** in the GUI, CLI, and
 `run_screening()` API. Choose **SVEM lasso** for penalized lasso fits, or
 **SVEM elastic net search (0.5, 1)** to compare the two mixing alphas within
@@ -309,6 +310,15 @@ for the method and Karl (2026) for the software.
 MIT. Copyright (c) 2026 Andrew T. Karl.
 
 ## Statistical and numerical interpretation
+
+To select a forward model by Gaussian validation likelihood, use
+`fit_svem_forward(X, y, objective="gaussian_likelihood")`. Each candidate
+uses training-weighted least squares. Its score is `log(t) + v/t`, with
+training MSE `t` and validation MSE `v` each averaged with its own weights.
+This charges a larger loss when a member predicts more precisely than its
+validation residuals justify. The first minimum subject to the usual
+validation Kish size limit wins. The formula and estimator interfaces accept
+the same option with `method="forward"`.
 
 `wAIC` means a validation-weighted AIC-like tuning score; it is not Bayesian
 WAIC. The FRW training and validation copies reuse the same observations, so

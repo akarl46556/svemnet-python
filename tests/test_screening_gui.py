@@ -61,6 +61,12 @@ def _run_gui_smoke(tmp_path, monkeypatch, base_model):
             "Lasso" if base_model else "SVEM forward selection"
         )
         assert app.null_vectors_var.get() == "0"
+        if not base_model:
+            app.likelihood_var.set(True)
+            app.method_var.set(app.screening.METHOD_LASSO)
+            assert not app.likelihood_var.get()
+            app.method_var.set(app.screening.METHOD_FORWARD)
+            app.likelihood_var.set(True)
         app._browse()
         assert path.read_bytes() == original
         app.jobs_var.set("1")

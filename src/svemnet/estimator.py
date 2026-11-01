@@ -37,7 +37,8 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
     n_boot:
         Number of FRW/SVEM bootstrap replicates (default 100).
     objective:
-        ``"wAIC"`` (default), ``"wBIC"``, or ``"wSSE"``.
+        ``"wAIC"`` (default), ``"wBIC"``, or ``"wSSE"``. Forward selection
+        also supports ``"gaussian_likelihood"``.
     weight_scheme:
         ``"SVEM"`` (default), ``"FRW_plain"``, or ``"Identity"``.
     alphas:
@@ -104,8 +105,6 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
             or self.n_boot < 1
         ):
             raise ValueError("n_boot must be a positive integer")
-        if self.objective not in ("wAIC", "wBIC", "wSSE"):
-            raise ValueError("objective must be 'wAIC', 'wBIC', or 'wSSE'")
         if self.weight_scheme not in ("SVEM", "FRW_plain", "Identity"):
             raise ValueError(
                 "weight_scheme must be 'SVEM', 'FRW_plain', or 'Identity'"

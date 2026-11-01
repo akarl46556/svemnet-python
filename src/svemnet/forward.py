@@ -10,9 +10,9 @@ included internally):
 * :func:`fit_svem_forward` — SVEM ensemble whose per-bootstrap base learner
   is greedy forward selection on training-weighted least squares. The forward
   path plays the lambda-path role: every path point is scored on the
-  fractional-random-weight validation copy with the same wSSE/wAIC/wBIC
-  kernels as :func:`svemnet.core.fit_svem`, and winning coefficient vectors
-  are averaged across bootstrap members.
+  fractional-random-weight validation copy using wSSE, wAIC, wBIC, or a
+  Gaussian log score with training-fitted variance. Winning coefficient
+  vectors are averaged across bootstrap members.
 
 Whole-effect groups: multi-column terms (for example a factor's contrast
 block) enter and leave the model together. Pass ``groups`` as an ordered
@@ -57,6 +57,7 @@ from .core import (
 )
 
 _SUPPORTED_CRITERIA = ("AICc", "AIC", "BIC")
+_FORWARD_OBJECTIVES = _SUPPORTED_OBJECTIVES | {"gaussian_likelihood"}
 
 ## ---------------------------------------------------------------------------
 ## Subset evaluation kernels (exact SVD reference + QR-update fast path)
@@ -566,7 +567,7 @@ def _grow_forward_path(
 
     Returns the nested path points (column-index tuples into the
     intercept-augmented matrix; point 0 = intercept-only), the selected group
-    names at each point, and whether growth was truncated by the wAIC/wBIC
+    names at each point, and whether growth was truncated by the Kish
     admissibility ceiling. ``k_slope_ceiling`` must be None for wSSE.
     """
     path_indices: list[int] = [0]
@@ -585,7 +586,7 @@ def _grow_forward_path(
 
     while remaining:
         if k_slope_ceiling is not None and (len(path_indices) - 1) >= k_slope_ceiling:
-            # Every further path point is inadmissible for wAIC/wBIC because
+            # Every further path point exceeds the Kish ceiling because
             # k_slope only grows; wSSE must never take this shortcut.
             admissibility_truncated = True
             break
@@ -645,42 +646,61 @@ def _fit_one_bootstrap(
             n_eff_raw=float(n_eff_raw), n_eff_adm=float(n_eff_adm),
             path_length=1, admissibility_truncated=False,
         )
+    likelihood = objective == "gaussian_likelihood"
+    fit_y = y
+    if likelihood:
+        # Work in response units of order one so the variance safeguard also
+        # scales with the response. The intercept absorbs this transformation.
+        offset = 0.5 * y.min() + 0.5 * y.max()
+        scale = np.max(np.abs(y - offset))
+        fit_y = (y - offset) / scale
     sqrt_w = np.sqrt(w_train)
     x_weighted = x * sqrt_w[:, None]
-    y_weighted = y * sqrt_w
+    y_weighted = fit_y * sqrt_w
 
     path_points, path_point_groups, admissibility_truncated = _grow_forward_path(
         x_weighted,
         y_weighted,
         groups=groups,
-        k_slope_ceiling=(float(n_eff_adm) if objective in ("wAIC", "wBIC") else None),
+        k_slope_ceiling=(None if objective == "wSSE" else float(n_eff_adm)),
     )
 
     # Score path points: training-weighted exact refits; validation weights
     # applied to residuals on the ORIGINAL unweighted rows.
     point_coefficients: list[np.ndarray] = []
-    sse_w = np.empty(len(path_points), dtype=float)
+    losses = np.empty(len(path_points), dtype=float)
+    valid_total = float(np.sum(w_valid))
+    train_total = float(np.sum(w_train))
     k_values = np.empty(len(path_points), dtype=int)
     for point_index, indices in enumerate(path_points):
         fit = _evaluate_subset(x_weighted, y_weighted, indices)
         point_coefficients.append(fit.coefficients)
-        residual = x[:, indices] @ fit.coefficients - y
-        sse_w[point_index] = float(np.sum(w_valid * residual * residual))
+        residual = x[:, indices] @ fit.coefficients - fit_y
+        if likelihood:
+            squared = residual * residual
+            t = max(float(w_train @ squared) / train_total, _FLOAT_EPS**2)
+            v = float(w_valid @ squared) / valid_total
+            losses[point_index] = math.log(t) + v / t
+        else:
+            losses[point_index] = float(np.sum(w_valid * residual * residual))
         k_values[point_index] = len(indices)
-    sse_w = np.where(np.isfinite(sse_w), sse_w, np.inf)
-    scores = weighted_ic_scores(
-        sse_w,
-        k_values,
-        n_like=float(np.sum(w_valid)),
-        n_eff_adm=float(n_eff_adm),
-        objective=objective,
-    )
+    losses = np.where(np.isfinite(losses), losses, np.inf)
+    if likelihood:
+        scores = np.where(k_values - 1 < n_eff_adm, losses, np.inf)
+    else:
+        scores = weighted_ic_scores(
+            losses, k_values, n_like=valid_total,
+            n_eff_adm=float(n_eff_adm), objective=objective,
+        )
 
     fallback = not np.any(np.isfinite(scores))
     if not fallback:
         winner = int(np.nanargmin(scores))
         coefficients = np.zeros(n_columns, dtype=float)
         coefficients[list(path_points[winner])] = point_coefficients[winner]
+        if likelihood:
+            coefficients *= scale
+            coefficients[0] += offset
         if not np.all(np.isfinite(coefficients)):
             fallback = True
     if fallback:
@@ -724,8 +744,12 @@ def fit_svem_forward(
     training-weighted least squares by greedy training-RSS reduction over
     whole-effect groups; each path point is refit on the weighted rows and
     scored by validation-weighted residuals computed on the original
-    (unweighted) rows through the shared wSSE/wAIC/wBIC kernel; the first
-    path-point minimum wins. For ``"wAIC"``/``"wBIC"``, path growth stops at
+    (unweighted) rows; the first path-point minimum wins. The optional
+    ``"gaussian_likelihood"`` score minimizes ``log(t) + v/t`` with normalized
+    training and validation MSEs ``t`` and ``v`` from the same WLS fit. For
+    numerical interpolation, training variance is floored at machine epsilon
+    squared after scaling the centered response to unit maximum magnitude.
+    For wAIC, wBIC and Gaussian likelihood, path growth stops at
     the Kish admissible-effective-sample-size ceiling (all further points
     would be inadmissible); ``"wSSE"`` has no support ceiling. All paths
     stop when training residuals reach the shared numerical noise floor. Bootstraps
@@ -744,8 +768,8 @@ def fit_svem_forward(
     n, p = X_arr.shape
     nBoot_int = _validate_positive_int(nBoot, "nBoot")
     parallel_config = _parallel._resolve_n_jobs(n_jobs, n_tasks=nBoot_int)
-    if objective not in _SUPPORTED_OBJECTIVES:
-        raise ValueError(f"objective must be one of {sorted(_SUPPORTED_OBJECTIVES)}")
+    if objective not in _FORWARD_OBJECTIVES:
+        raise ValueError(f"objective must be one of {sorted(_FORWARD_OBJECTIVES)}")
     if weight_scheme not in _SUPPORTED_WEIGHT_SCHEMES:
         raise ValueError(
             f"weight_scheme must be one of {sorted(_SUPPORTED_WEIGHT_SCHEMES)}"
@@ -920,6 +944,8 @@ def fit_svem_forward(
             "base_learner": "forward_selection_weighted_least_squares",
             "training_weight_application": "row_scaling_sqrt_w_train",
             "validation_scoring": (
+                "Gaussian validation log loss with training ML variance"
+                if objective == "gaussian_likelihood" else
                 "w_valid on residuals from ORIGINAL unweighted rows via "
                 "weighted_ic_scores"
             ),

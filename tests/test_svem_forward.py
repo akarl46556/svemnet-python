@@ -31,7 +31,8 @@ class TestFitSvemForward:
         preds = result.predict(X)
         assert np.corrcoef(preds, y)[0, 1] ** 2 > 0.9
 
-    def test_single_bootstrap_oracle(self):
+    @pytest.mark.parametrize("objective", ["wAIC", "gaussian_likelihood"])
+    def test_single_bootstrap_oracle(self, objective):
         """One injected-uniforms replicate must match an independent
         lstsq-based reimplementation of the grow/score/select contract."""
         X, y, names = _toy(n=30)
@@ -39,7 +40,8 @@ class TestFitSvemForward:
         rng = np.random.default_rng(11)
         U = rng.uniform(0.05, 0.95, size=(1, n))
         result = fit_svem_forward(
-            X, y, nBoot=1, seed=0, feature_names=names, weight_uniforms=U
+            X, y, nBoot=1, seed=0, feature_names=names, weight_uniforms=U,
+            objective=objective,
         )
 
         # Oracle: weights from the shared uniforms
@@ -80,6 +82,10 @@ class TestFitSvemForward:
             k = len(pt)
             if (k - 1) >= n_eff_adm:
                 scores.append(np.inf)
+            elif objective == "gaussian_likelihood":
+                training_mse = np.average(resid**2, weights=w_train)
+                validation_mse = np.average(resid**2, weights=w_valid)
+                scores.append(np.log(training_mse) + validation_mse / training_mse)
             else:
                 n_like = float(w_valid.sum())
                 scores.append(n_like * np.log(sse / n_like) + 2.0 * k)
@@ -88,6 +94,33 @@ class TestFitSvemForward:
         expected[list(points[winner])] = betas[winner]
 
         np.testing.assert_allclose(result.coef_matrix[0], expected, atol=1e-7)
+
+    def test_likelihood_selection_is_scale_equivariant_and_can_differ_from_waic(self):
+        rng = np.random.default_rng(104)
+        X = rng.normal(size=(14, 4))
+        y = 1 + 0.6 * X[:, 0] - 0.5 * X[:, 1] + rng.normal(size=14)
+        opts = dict(nBoot=8, weight_uniforms=rng.uniform(size=(8, 14)))
+        baseline = fit_svem_forward(X, y, **opts)
+        fit = fit_svem_forward(X, y, objective="gaussian_likelihood", **opts)
+        assert baseline.selected_k[5] == 1 and fit.selected_k[5] == 2
+        for factor in (1e-80, -1000.0):
+            scaled = fit_svem_forward(X, factor*y, objective="gaussian_likelihood", **opts)
+            np.testing.assert_array_equal(scaled.selected_k, fit.selected_k)
+            np.testing.assert_allclose(scaled.coef_matrix / factor, fit.coef_matrix, atol=1e-12)
+
+    def test_likelihood_excludes_oversized_group_and_handles_exact_fits(self):
+        rng = np.random.default_rng(602)
+        X = rng.normal(size=(12, 4))
+        y = X @ np.arange(1., 5.)
+        U = np.full((1, len(y)), 0.02)
+        U[0, 0] = 0.99999
+        opts = dict(nBoot=1, objective="gaussian_likelihood")
+        limited = fit_svem_forward(X, y, groups={"block": range(4)}, weight_uniforms=U, **opts)
+        assert limited.selected_k[0] == 1
+        exact = fit_svem_forward(X, y, weight_scheme="Identity", **opts)
+        np.testing.assert_allclose(exact.predict(X), y, atol=1e-12)
+        const = fit_svem_forward(X, np.full(len(y), 3.), **opts)
+        np.testing.assert_allclose(const.coef_matrix[0], [3., 0., 0., 0., 0.])
 
     def test_waic_ceiling_binds_but_never_for_wsse(self):
         rng = np.random.default_rng(99)

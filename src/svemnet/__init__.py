@@ -45,7 +45,7 @@ from .forward import (
 )
 from .lasso import CVLassoResult, fit_lasso_cv
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 # The formula-interface names are provided lazily via __getattr__ and deliberately
 # excluded from __all__ so `from svemnet import *` works on installs

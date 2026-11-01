@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0 (2026-10-31)
+
+- Gaussian forward selection supports `objective="gaussian_likelihood"` in the
+  array, formula, estimator and screening interfaces. It evaluates validation
+  residuals using each candidate's training variance and the existing Kish
+  support limit. The default remains `wAIC`.
+
 ## 0.7.0 (2026-10-29)
 
 - Prevent report output names from overwriting source CSVs. Prediction write-back

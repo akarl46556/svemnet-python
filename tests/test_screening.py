@@ -34,6 +34,7 @@ def test_screening_defaults_are_200_members_centered_no_nulls_and_all_cpus():
     assert args.center_polynomials is True
     assert args.null_vectors == 0
     assert args.method == "forward"
+    assert args.objective == "wAIC"
     args = build_parser().parse_args(
         [
             "run",
@@ -49,6 +50,19 @@ def test_screening_defaults_are_200_members_centered_no_nulls_and_all_cpus():
     )
     assert args.center_polynomials is False
     assert args.null_vectors == 3
+
+
+def test_forward_screening_likelihood_is_recorded_and_other_methods_reject_it():
+    rng = np.random.default_rng(39)
+    data = pd.DataFrame(rng.normal(size=(16, 3)), columns=["Y", "A", "B"])
+    cli = build_parser().parse_args(["run", "test.csv", "--response", "Y", "--factors",
+                                     "A", "B", "--objective", "gaussian_likelihood"])
+    opts = dict(response=cli.response, factors=cli.factors, objective=cli.objective,
+                n_boot=3, n_jobs=1)
+    result = run_screening(data, method=cli.method, **opts)
+    assert result.metadata()["objective"] == "gaussian_likelihood"
+    with np.testing.assert_raises_regex(ValueError, "forward"):
+        run_screening(data, method="lasso", **opts)
 
 
 def test_null_vectors_are_reproducible_main_effects_only():
