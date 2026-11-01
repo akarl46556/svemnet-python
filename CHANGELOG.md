@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0 (2026-11-01)
+
+- Forward selection now defaults to Gaussian validation likelihood across the
+  array, formula, sklearn estimator and screening interfaces, including the
+  GUI and CLI. Pass `objective="wAIC"` to reproduce the 0.8.0 forward default.
+  Lasso and elastic-net fits continue to use wAIC by default.
+
 ## 0.8.0 (2026-10-31)
 
 - Gaussian forward selection supports `objective="gaussian_likelihood"` in the

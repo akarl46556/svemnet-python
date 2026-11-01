@@ -34,7 +34,7 @@ def test_screening_defaults_are_200_members_centered_no_nulls_and_all_cpus():
     assert args.center_polynomials is True
     assert args.null_vectors == 0
     assert args.method == "forward"
-    assert args.objective == "wAIC"
+    assert args.objective is None  # resolved after the fitting method is known
     args = build_parser().parse_args(
         [
             "run",
@@ -272,7 +272,7 @@ def test_screening_uses_existing_parallel_engine_and_writes_outputs(tmp_path):
     ):
         assert (output / name).stat().st_size > 0
     metadata = json.loads((output / "run_metadata.json").read_text())
-    assert metadata["objective"] == "wAIC"
+    assert metadata["objective"] == "gaussian_likelihood"
     assert metadata["bootstrap_members_requested"] == 4
     assert metadata["svemnet_parallel_backend"] == "processes"
     assert metadata["center_polynomials"] is True

@@ -3,7 +3,7 @@
 Gaussian SVEM regression for small-sample design-of-experiments workflows:
 SVEM lasso / elastic net (:func:`fit_svem`) and SVEM forward selection
 (:func:`fit_svem_forward`), tuned per bootstrap by validation-weighted
-information criteria, plus a deterministic forward-AICc benchmark
+scores, plus a deterministic forward-AICc benchmark
 (:func:`forward_select`).
 
 Interfaces
@@ -45,7 +45,7 @@ from .forward import (
 )
 from .lasso import CVLassoResult, fit_lasso_cv
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 # The formula-interface names are provided lazily via __getattr__ and deliberately
 # excluded from __all__ so `from svemnet import *` works on installs

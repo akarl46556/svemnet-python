@@ -191,7 +191,7 @@ class ScreeningApp:
                 width=9,
             ).grid(row=4, column=3, sticky="w", padx=6, pady=(10, 0))
         else:
-            self.likelihood_var = tk.BooleanVar(value=False)
+            self.likelihood_var = tk.BooleanVar(value=True)
             likelihood_check = ttk.Checkbutton(
                 options, text="Use Gaussian validation likelihood (forward selection)",
                 variable=self.likelihood_var,
@@ -202,8 +202,7 @@ class ScreeningApp:
 
             def update_objective(*_):
                 forward = self.method_var.get() == screening.METHOD_FORWARD
-                if not forward:
-                    self.likelihood_var.set(False)
+                self.likelihood_var.set(forward)
                 likelihood_check.state(["!disabled" if forward else "disabled"])
 
             self.method_var.trace_add("write", update_objective)
@@ -702,8 +701,8 @@ def build_parser(*, base_model=False) -> argparse.ArgumentParser:
         run.add_argument("--rule", choices=("min", "1se"), default="min")
     else:
         run.add_argument("--bootstraps", type=int, default=200)
-        run.add_argument("--objective", choices=("wAIC", "gaussian_likelihood"), default="wAIC",
-                         help="path selection score; Gaussian likelihood is available for forward selection")
+        run.add_argument("--objective", choices=("wAIC", "gaussian_likelihood"),
+                         help="default: gaussian_likelihood for forward selection, wAIC for other methods")
     run.add_argument(
         "--model",
         choices=("interactions", "response-surface"),

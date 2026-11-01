@@ -87,7 +87,7 @@ export_forward_aicc <- function(tag, formula, data) {
 }
 
 export_svem_forward_identity <- function(tag, formula, data) {
-  fit <- svem_forward(formula, data, nBoot = 1, weight_scheme = "Identity")
+  fit <- svem_forward(formula, data, nBoot = 1, weight_scheme = "Identity", objective = "wAIC")
   write_matrix(fit$coef_matrix,
                file.path(out_dir, paste0(tag, "_sf_identity_coef.csv")))
 }

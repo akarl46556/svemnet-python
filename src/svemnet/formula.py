@@ -38,7 +38,7 @@ except ImportError as exc:  # pragma: no cover - exercised without the extra
     ) from exc
 
 from .core import fit_svem
-from .forward import ForwardICResult, fit_svem_forward, forward_select
+from .forward import ForwardICResult, _method_objective, fit_svem_forward, forward_select
 
 def _design_from_formula(formula: str, data: "pd.DataFrame", *,
                          prune_zero_columns: bool = True,
@@ -264,7 +264,7 @@ def svem(
     *,
     method: str = "elastic_net",
     nBoot: int = 100,
-    objective: str = "wAIC",
+    objective: str | None = None,
     weight_scheme: str = "SVEM",
     alphas: Sequence[float] = (1.0,),
     debias: bool = False,
@@ -278,12 +278,14 @@ def svem(
     (:func:`svemnet.core.fit_svem`); ``method="forward"`` uses
     forward-selection base learners (:func:`svemnet.forward.fit_svem_forward`)
     with whole-effect groups taken from the formula terms, so factor
-    contrast blocks enter together. ``n_jobs`` controls bootstrap workers;
+    contrast blocks enter together. The default objective is Gaussian likelihood
+    for forward selection and wAIC for elastic net. ``n_jobs`` controls bootstrap workers;
     the default ``1`` remains serial for JMP and other embedded interpreters.
     """
     y, X, names, groups, spec, metadata = _design_from_formula(
         formula, data, return_metadata=True
     )
+    objective = _method_objective(method, objective)
     if method == "elastic_net":
         result = fit_svem(
             X,

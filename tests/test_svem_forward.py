@@ -100,8 +100,9 @@ class TestFitSvemForward:
         X = rng.normal(size=(14, 4))
         y = 1 + 0.6 * X[:, 0] - 0.5 * X[:, 1] + rng.normal(size=14)
         opts = dict(nBoot=8, weight_uniforms=rng.uniform(size=(8, 14)))
-        baseline = fit_svem_forward(X, y, **opts)
+        baseline = fit_svem_forward(X, y, objective="wAIC", **opts)
         fit = fit_svem_forward(X, y, objective="gaussian_likelihood", **opts)
+        np.testing.assert_array_equal(fit_svem_forward(X, y, **opts).coef_matrix, fit.coef_matrix)
         assert baseline.selected_k[5] == 1 and fit.selected_k[5] == 2
         for factor in (1e-80, -1000.0):
             scaled = fit_svem_forward(X, factor*y, objective="gaussian_likelihood", **opts)

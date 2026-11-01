@@ -26,6 +26,16 @@ def _toy_df(n=50, seed=7, factor=False):
 
 
 class TestFormulaSvem:
+    @pytest.mark.parametrize("method,expected", [("forward", "gaussian_likelihood"),
+                                                ("elastic_net", "wAIC")])
+    def test_default_objective_by_method(self, method, expected):
+        data = _toy_df(n=16)
+        options = dict(method=method, nBoot=3, seed=23)
+        default = svemnet.svem("y ~ X1 + X2", data, **options).result_
+        explicit = svemnet.svem("y ~ X1 + X2", data, objective=expected, **options).result_
+        assert default.objective == expected
+        np.testing.assert_array_equal(default.coef_matrix, explicit.coef_matrix)
+
     def test_n_jobs_is_forwarded(self):
         df = _toy_df(n=30)
         model = svemnet.svem(

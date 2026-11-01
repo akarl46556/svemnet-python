@@ -10,7 +10,7 @@ from sklearn.utils import check_random_state
 from sklearn.utils.validation import check_is_fitted, validate_data
 
 from .core import fit_svem, predict_svem
-from .forward import fit_svem_forward
+from .forward import _method_objective, fit_svem_forward
 
 _METHODS = ("elastic_net", "forward")
 
@@ -22,7 +22,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
     anti-correlated fractional-random-weight train/validation copies are
     drawn, a base-learner path is fit on the training copy (an elastic-net
     lambda path, or a greedy forward-selection path), the path point
-    minimizing a validation-weighted information criterion wins, and winning
+    minimizing the selected validation score wins, and winning
     coefficient vectors are averaged across bootstraps.
 
     ``X`` must be numeric with no intercept column (expand categoricals
@@ -37,8 +37,9 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
     n_boot:
         Number of FRW/SVEM bootstrap replicates (default 100).
     objective:
-        ``"wAIC"`` (default), ``"wBIC"``, or ``"wSSE"``. Forward selection
-        also supports ``"gaussian_likelihood"``.
+        The default (``None``) selects ``"gaussian_likelihood"`` for forward
+        selection and ``"wAIC"`` for elastic net. Both support explicit
+        ``"wAIC"``, ``"wBIC"`` and ``"wSSE"``.
     weight_scheme:
         ``"SVEM"`` (default), ``"FRW_plain"``, or ``"Identity"``.
     alphas:
@@ -76,7 +77,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
         self,
         method: str = "elastic_net",
         n_boot: int = 100,
-        objective: str = "wAIC",
+        objective: str | None = None,
         weight_scheme: str = "SVEM",
         alphas: Sequence[float] = (1.0,),
         debias: bool = False,
@@ -115,6 +116,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
         ):
             raise ValueError("alphas must be finite values in (0, 1]")
         seed = self._derived_seed()
+        objective = _method_objective(self.method, self.objective)
         names = getattr(self, "feature_names_in_", None)
         feature_names = None if names is None else tuple(str(n) for n in names)
         if self.method == "elastic_net":
@@ -127,7 +129,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
                 y,
                 nBoot=self.n_boot,
                 alpha=self.alphas,
-                objective=self.objective,
+                objective=objective,
                 weight_scheme=self.weight_scheme,
                 seed=seed,
                 debias=self.debias,
@@ -139,7 +141,7 @@ class SVEMRegressor(RegressorMixin, BaseEstimator):
                 X,
                 y,
                 nBoot=self.n_boot,
-                objective=self.objective,
+                objective=objective,
                 weight_scheme=self.weight_scheme,
                 seed=seed,
                 groups=self.groups,

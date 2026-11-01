@@ -43,6 +43,7 @@ class TestSVEMRegressor:
         assert repro["n_jobs_requested"] == 2
         assert repro["n_jobs_effective"] == 2
         assert est.get_params()["n_jobs"] == 2
+        assert est.result_.objective == ("gaussian_likelihood" if method == "forward" else "wAIC")
 
     def test_fit_predict_and_score(self):
         X, y = _toy()

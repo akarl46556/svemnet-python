@@ -58,6 +58,13 @@ from .core import (
 
 _SUPPORTED_CRITERIA = ("AICc", "AIC", "BIC")
 _FORWARD_OBJECTIVES = _SUPPORTED_OBJECTIVES | {"gaussian_likelihood"}
+_DEFAULT_FORWARD_OBJECTIVE = "gaussian_likelihood"
+
+
+def _method_objective(method: str, objective: str | None) -> str:
+    if objective is not None:
+        return objective
+    return _DEFAULT_FORWARD_OBJECTIVE if method == "forward" else "wAIC"
 
 ## ---------------------------------------------------------------------------
 ## Subset evaluation kernels (exact SVD reference + QR-update fast path)
@@ -728,7 +735,7 @@ def fit_svem_forward(
     y: Sequence[float] | np.ndarray,
     *,
     nBoot: int = 100,
-    objective: str = "wAIC",
+    objective: str = _DEFAULT_FORWARD_OBJECTIVE,
     weight_scheme: str = "SVEM",
     seed: int | None = None,
     groups: Mapping[str, Sequence[int]] | None = None,
@@ -744,7 +751,7 @@ def fit_svem_forward(
     training-weighted least squares by greedy training-RSS reduction over
     whole-effect groups; each path point is refit on the weighted rows and
     scored by validation-weighted residuals computed on the original
-    (unweighted) rows; the first path-point minimum wins. The optional
+    (unweighted) rows; the first path-point minimum wins. The default
     ``"gaussian_likelihood"`` score minimizes ``log(t) + v/t`` with normalized
     training and validation MSEs ``t`` and ``v`` from the same WLS fit. For
     numerical interpolation, training variance is floored at machine epsilon

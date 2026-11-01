@@ -23,7 +23,7 @@ from .core import _numerically_constant_columns, _validate_seed, fit_svem
 from .csvio import assert_no_protected_collision, dumps_metadata
 from .expansion import response_surface_formula
 from .formula import SVEMFormulaModel, _design_from_formula
-from .forward import fit_svem_forward
+from .forward import _method_objective, fit_svem_forward
 from .prediction import PredictionMixin
 
 MODEL_INTERACTIONS = "Main effects + two-way interactions"
@@ -507,16 +507,17 @@ def run_screening(
     center_polynomials: bool = True,
     n_null_vectors: int = 0,
     method: str = "forward",
-    objective: str = "wAIC",
+    objective: str | None = None,
     alphas: Sequence[float] | None = None,
     n_boot: int = 200,
     seed: int | None = 12345,
     n_jobs: int | None = -1,
     progress: Callable[[int, int], None] | None = None,
 ) -> ScreeningResult:
-    """Run SVEM screening, defaulting to forward selection, wAIC and all CPUs.
+    """Run SVEM screening, defaulting to forward selection and all CPUs.
 
-    Forward selection also accepts ``objective="gaussian_likelihood"``.
+    Forward selection uses Gaussian likelihood by default and accepts an
+    explicit ``objective="wAIC"``. Lasso and elastic-net screening use wAIC.
     ``n_null_vectors`` adds reproducible standard-normal main effects using
     a separate stream derived from the analysis seed. They provide a
     noise-selection benchmark without changing the fitting random stream.
@@ -525,6 +526,7 @@ def run_screening(
     """
     if method not in ("lasso", "elastic_net", "forward"):
         raise ValueError("method must be 'lasso', 'elastic_net', or 'forward'")
+    objective = _method_objective(method, objective)
     if objective != "wAIC" and not (method == "forward" and objective == "gaussian_likelihood"):
         raise ValueError("screening uses wAIC or, for forward selection, gaussian_likelihood")
     seed = _validate_seed(seed)

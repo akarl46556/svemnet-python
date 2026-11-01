@@ -101,7 +101,7 @@ def compare_forward_identity(tag: str) -> None:
     groups = load_groups(OUT / f"{tag}_groups.csv")
     r_coef, _ = load_matrix(OUT / f"{tag}_sf_identity_coef.csv")
     py = fit_svem_forward(
-        X, y, nBoot=1, weight_scheme="Identity",
+        X, y, nBoot=1, weight_scheme="Identity", objective="wAIC",
         groups=groups, feature_names=tuple(names),
     )
     max_diff = float(np.max(np.abs(py.coef_matrix[0] - r_coef[0])))
